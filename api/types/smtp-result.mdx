@@ -1,0 +1,277 @@
+---
+title: "SmtpResult"
+description: "Deep SMTP verification results and reachability status"
+---
+
+## SmtpResult Interface
+
+Contains detailed SMTP verification results when deep mode is enabled.
+
+```typescript
+export interface SmtpResult {
+  is_reachable: ReachableStatus;
+  can_connect: boolean;
+  is_deliverable: boolean;
+  is_catch_all: boolean;
+}
+```
+
+## Fields
+
+<ResponseField name="is_reachable" type="ReachableStatus" required>
+  Overall reachability classification. See [ReachableStatus](#reachablestatus-type) below.
+  
+  - `safe` - Email is deliverable
+  - `risky` - Uncertain deliverability (catch-all domain)
+  - `invalid` - Email is not deliverable
+  - `unknown` - Unable to determine (SMTP error)
+</ResponseField>
+
+<ResponseField name="can_connect" type="boolean" required>
+  Whether the SMTP server could be reached and accepted connections.
+  
+  - `true`: Successfully connected to SMTP server
+  - `false`: Connection failed or server unreachable
+</ResponseField>
+
+<ResponseField name="is_deliverable" type="boolean" required>
+  Whether the specific mailbox exists and can receive mail.
+  
+  - `true`: Mailbox exists and accepts mail
+  - `false`: Mailbox not found or disabled
+</ResponseField>
+
+<ResponseField name="is_catch_all" type="boolean" required>
+  Whether the domain accepts all email addresses (catch-all configuration).
+  
+  - `true`: Domain accepts any email (e.g., `*@example.com`)
+  - `false`: Domain only accepts valid mailboxes
+  
+  **Note**: Catch-all domains return `is_reachable: 'risky'` because the actual mailbox existence cannot be verified.
+</ResponseField>
+
+## ReachableStatus Type
+
+Classifies the overall deliverability of the email:
+
+```typescript
+export type ReachableStatus = 'safe' | 'risky' | 'invalid' | 'unknown';
+```
+
+### Status Values
+
+<ResponseField name="safe" type="string">
+  **Deliverable** - Email passed all checks and is safe to send to.
+  
+  - SMTP connection successful
+  - Mailbox exists
+  - Not catch-all
+  - Not disposable
+</ResponseField>
+
+<ResponseField name="risky" type="string">
+  **Uncertain** - Email may or may not be deliverable.
+  
+  Common reasons:
+  - Domain is catch-all (accepts all addresses)
+  - Server provides ambiguous responses
+  - Greylisting or anti-spam measures active
+  
+  **Recommendation**: Proceed with caution or manual review.
+</ResponseField>
+
+<ResponseField name="invalid" type="string">
+  **Not Deliverable** - Email definitely cannot receive mail.
+  
+  Common reasons:
+  - Mailbox doesn't exist
+  - Mailbox is full
+  - Mailbox is disabled
+  - Domain rejects mail
+  
+  **Recommendation**: Do not send to this address.
+</ResponseField>
+
+<ResponseField name="unknown" type="string">
+  **Unable to Verify** - SMTP check could not be completed.
+  
+  Common reasons:
+  - SMTP server timeout
+  - Server temporarily unavailable
+  - Network errors
+  - Anti-verification measures
+  
+  **Recommendation**: Retry later or treat as risky.
+</ResponseField>
+
+## Examples
+
+### Safe Email
+
+```typescript
+import { validateEmail } from '@sniffmail/sdk';
+
+const result = await validateEmail('john@company.com', { deep: true });
+
+if (result.smtp) {
+  console.log(result.smtp);
+  // Output:
+  // {
+  //   is_reachable: 'safe',
+  //   can_connect: true,
+  //   is_deliverable: true,
+  //   is_catch_all: false
+  // }
+}
+```
+
+### Invalid Email - Mailbox Not Found
+
+```typescript
+const result = await validateEmail('fakeperson@gmail.com', { deep: true });
+
+if (result.smtp) {
+  console.log(result.smtp);
+  // Output:
+  // {
+  //   is_reachable: 'invalid',
+  //   can_connect: true,
+  //   is_deliverable: false,
+  //   is_catch_all: false
+  // }
+  
+  console.log(result.reason); // 'mailbox_not_found'
+}
+```
+
+### Risky Email - Catch-All Domain
+
+```typescript
+const result = await validateEmail('anyone@catchall-domain.com', { deep: true });
+
+if (result.smtp) {
+  console.log(result.smtp);
+  // Output:
+  // {
+  //   is_reachable: 'risky',
+  //   can_connect: true,
+  //   is_deliverable: true,
+  //   is_catch_all: true
+  // }
+  
+  console.log(result.reason); // 'catch_all'
+}
+```
+
+### Unknown - SMTP Error
+
+```typescript
+const result = await validateEmail('user@protected-domain.com', { deep: true });
+
+if (result.smtp) {
+  console.log(result.smtp);
+  // Output:
+  // {
+  //   is_reachable: 'unknown',
+  //   can_connect: false,
+  //   is_deliverable: false,
+  //   is_catch_all: false
+  // }
+  
+  console.log(result.reason); // 'smtp_error'
+}
+```
+
+## Decision Logic
+
+Use this flow to handle different statuses:
+
+```typescript
+const result = await validateEmail(email, { deep: true });
+
+if (!result.smtp) {
+  // Quick mode was used, smtp is null
+  if (result.valid) {
+    // Syntax + MX checks passed
+  }
+} else {
+  // Deep mode results available
+  switch (result.smtp.is_reachable) {
+    case 'safe':
+      // ✓ Send email
+      sendEmail(email);
+      break;
+      
+    case 'risky':
+      // ⚠ Proceed with caution
+      if (result.smtp.is_catch_all) {
+        // Manual review recommended
+        flagForReview(email);
+      } else {
+        // Try sending with lower priority
+        sendEmailLowPriority(email);
+      }
+      break;
+      
+    case 'invalid':
+      // ✗ Do not send
+      removeFromList(email);
+      break;
+      
+    case 'unknown':
+      // ? Retry later or treat as risky
+      scheduleRetry(email);
+      break;
+  }
+}
+```
+
+## Filtering Strategies
+
+### Strict (Only Safe)
+
+```typescript
+const safeEmails = results.results.filter(
+  r => r.smtp?.is_reachable === 'safe'
+);
+```
+
+### Moderate (Safe + Risky)
+
+```typescript
+const sendableEmails = results.results.filter(
+  r => r.smtp?.is_reachable === 'safe' || r.smtp?.is_reachable === 'risky'
+);
+```
+
+### Permissive (Exclude Invalid Only)
+
+```typescript
+const sendableEmails = results.results.filter(
+  r => r.smtp?.is_reachable !== 'invalid'
+);
+```
+
+## Availability
+
+The `smtp` field is only populated when:
+
+1. `deep: true` option is used
+2. API key is configured
+3. Email passes initial checks (syntax, disposable, MX)
+4. SMTP verification completes successfully
+
+```typescript
+// Quick mode - smtp is always null
+const result1 = await validateEmail(email);
+console.log(result1.smtp); // null
+
+// Deep mode - smtp contains results
+const result2 = await validateEmail(email, { deep: true });
+console.log(result2.smtp); // SmtpResult object
+```
+
+## Related Types
+
+- [ValidationResult](/api/types/validation-result) - Complete validation result
+- [ValidationOptions](/api/types/validation-options) - Enable deep mode with `deep: true`

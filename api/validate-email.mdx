@@ -1,0 +1,257 @@
+---
+title: 'validateEmail'
+description: 'Validate a single email address with syntax, disposable, MX, and optional SMTP verification'
+---
+
+## Function Signature
+
+```typescript
+function validateEmail(
+  email: string,
+  options?: ValidationOptions
+): Promise<ValidationResult>
+```
+
+Validates an email address through multiple verification layers:
+
+1. **Syntax validation** - Checks email format
+2. **Disposable detection** - Blocks burner/temporary email addresses
+3. **MX record lookup** - Verifies the domain has mail servers
+4. **DeBounce API check** - Real-time disposable domain detection
+5. **SMTP verification** (optional) - Verifies the mailbox actually exists
+
+## Parameters
+
+<ParamField path="email" type="string" required>
+  The email address to validate. Will be normalized (trimmed and lowercased).
+</ParamField>
+
+<ParamField path="options" type="ValidationOptions">
+  Optional validation configuration
+
+  <ParamField path="deep" type="boolean" default="false">
+    Enable deep SMTP verification to check if the mailbox actually exists. Requires API key.
+  </ParamField>
+
+  <ParamField path="checkMx" type="boolean" default="true">
+    Check MX records to verify the domain has mail servers.
+  </ParamField>
+
+  <ParamField path="useDeBounce" type="boolean" default="true">
+    Use DeBounce API for real-time disposable domain detection.
+  </ParamField>
+
+  <ParamField path="timeout" type="number" default="5">
+    Timeout for DNS lookups in seconds.
+  </ParamField>
+</ParamField>
+
+## Returns
+
+<ResponseField name="ValidationResult" type="object">
+  Detailed validation result with breakdown by check type
+
+  <ResponseField name="email" type="string">
+    The normalized email address (trimmed and lowercased)
+  </ResponseField>
+
+  <ResponseField name="valid" type="boolean">
+    Overall validity - `true` if the email passed all checks
+  </ResponseField>
+
+  <ResponseField name="reason" type="ValidationReason | null">
+    Why the email is invalid, or `null` if valid. Possible values:
+    - `invalid_syntax` - Email format is invalid
+    - `disposable` - Domain is a known disposable email provider
+    - `no_mx_records` - Domain has no mail servers
+    - `mailbox_not_found` - Mailbox doesn't exist (deep mode only)
+    - `mailbox_full` - Mailbox is full (deep mode only)
+    - `mailbox_disabled` - Mailbox is disabled (deep mode only)
+    - `catch_all` - Domain accepts all emails (deep mode only)
+    - `smtp_error` - Could not connect to mail server (deep mode only)
+  </ResponseField>
+
+  <ResponseField name="disposable" type="boolean">
+    Whether the domain is a disposable/burner email provider
+  </ResponseField>
+
+  <ResponseField name="mx" type="boolean">
+    Whether the domain has valid MX records
+  </ResponseField>
+
+  <ResponseField name="smtp" type="SmtpResult | null">
+    SMTP verification details (only present when `deep: true`)
+
+    <ResponseField name="is_reachable" type="'safe' | 'risky' | 'invalid' | 'unknown'">
+      Overall reachability status:
+      - `safe` - Email exists and is deliverable
+      - `risky` - Email exists but might bounce (catch-all, full mailbox)
+      - `invalid` - Email does not exist
+      - `unknown` - Could not determine (timeout, blocked, etc.)
+    </ResponseField>
+
+    <ResponseField name="can_connect" type="boolean">
+      Whether connection to the SMTP server was successful
+    </ResponseField>
+
+    <ResponseField name="is_deliverable" type="boolean">
+      Whether the mailbox accepts mail
+    </ResponseField>
+
+    <ResponseField name="is_catch_all" type="boolean">
+      Whether the domain accepts all email addresses (catch-all)
+    </ResponseField>
+  </ResponseField>
+
+  <ResponseField name="cached" type="boolean">
+    Whether this result was retrieved from cache
+  </ResponseField>
+</ResponseField>
+
+## Examples
+
+### Basic Validation (Quick Mode)
+
+Quick mode is **free** and requires **no API key**. It performs syntax, disposable, and MX checks.
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+const result = await validateEmail('someone@temp-mail.org');
+
+if (!result.valid) {
+  console.log(`Invalid: ${result.reason}`);
+  // Output: Invalid: disposable
+}
+
+console.log(result);
+/*
+{
+  email: 'someone@temp-mail.org',
+  valid: false,
+  reason: 'disposable',
+  disposable: true,
+  mx: true,
+  smtp: null,
+  cached: false
+}
+*/
+```
+
+### Deep Mode (SMTP Verification)
+
+Deep mode verifies that a mailbox actually exists - catches fake emails like `fakeperson123@gmail.com`.
+
+```typescript
+import { configure, validateEmail } from 'sniffmail';
+
+// Get your free API key at https://sniffmail.io
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+
+const result = await validateEmail('fakeperson@google.com', { deep: true });
+
+if (result.smtp?.is_reachable === 'invalid') {
+  console.log('Mailbox does not exist!');
+}
+
+console.log(result);
+/*
+{
+  email: 'fakeperson@google.com',
+  valid: false,
+  reason: 'mailbox_not_found',
+  disposable: false,
+  mx: true,
+  smtp: {
+    is_reachable: 'invalid',
+    can_connect: true,
+    is_deliverable: false,
+    is_catch_all: false
+  },
+  cached: false
+}
+*/
+```
+
+### Signup Form Validation
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+async function validateSignupEmail(email: string): Promise<string | null> {
+  const result = await validateEmail(email);
+
+  if (!result.valid) {
+    switch (result.reason) {
+      case 'invalid_syntax':
+        return 'Please enter a valid email address';
+      case 'disposable':
+        return 'Disposable email addresses are not allowed';
+      case 'no_mx_records':
+        return 'This email domain does not exist';
+      default:
+        return 'Please enter a valid email address';
+    }
+  }
+
+  return null; // Valid
+}
+```
+
+### Critical Email Verification
+
+```typescript
+import { configure, validateEmail } from 'sniffmail';
+
+// Configure once at app startup
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+
+async function verifyEmailForInvoice(email: string): Promise<boolean> {
+  const result = await validateEmail(email, { deep: true });
+
+  if (!result.valid) {
+    console.log(`Email ${email} failed: ${result.reason}`);
+    return false;
+  }
+
+  if (result.smtp?.is_reachable === 'risky') {
+    console.log(`Warning: ${email} is risky (catch-all or full inbox)`);
+  }
+
+  return true;
+}
+```
+
+## Error Handling
+
+```typescript
+import {
+  validateEmail,
+  ApiKeyNotConfiguredError,
+  SniffmailError
+} from 'sniffmail';
+
+try {
+  const result = await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    console.error('API key not set. Get one at https://sniffmail.io');
+  } else if (error instanceof SniffmailError) {
+    if (error.statusCode === 403) {
+      console.error('Usage limit exceeded. Upgrade at https://sniffmail.io');
+    } else if (error.statusCode === 429) {
+      console.error('Rate limited. Slow down requests.');
+    }
+  }
+}
+```
+
+## Related
+
+- [validateEmails](/api/validate-emails) - Batch validation with concurrency
+- [configure](/api/configure) - Set API key and cache settings
+- [isDisposableDomain](/api/is-disposable-domain) - Quick synchronous disposable check

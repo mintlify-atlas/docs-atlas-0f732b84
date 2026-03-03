@@ -1,0 +1,300 @@
+---
+title: 'configure'
+description: 'Configure global SDK settings including API key and caching'
+---
+
+## Function Signature
+
+```typescript
+function configure(options: SniffmailConfig): void
+```
+
+Configures global settings for the Sniffmail SDK. Call this once at application startup to set your API key and customize caching behavior.
+
+## Parameters
+
+<ParamField path="options" type="SniffmailConfig" required>
+  Global configuration object
+
+  <ParamField path="apiKey" type="string">
+    Your Sniffmail API key. Required for deep mode (SMTP verification). Get your free API key at [https://sniffmail.io](https://sniffmail.io).
+    
+    Can also be set via the `SNIFFMAIL_API_KEY` environment variable.
+  </ParamField>
+
+  <ParamField path="cache" type="object">
+    Cache configuration
+
+    <ParamField path="enabled" type="boolean" default="true">
+      Enable or disable result caching. When enabled, validation results are cached to avoid redundant API calls.
+    </ParamField>
+
+    <ParamField path="store" type="CacheStore">
+      Custom cache store implementation. Defaults to in-memory cache. Use `RedisCache` for production deployments.
+    </ParamField>
+
+    <ParamField path="ttl" type="CacheTtlConfig">
+      Time-to-live (TTL) for cached results in seconds, by reachability status
+
+      <ParamField path="safe" type="number" default="604800">
+        TTL for valid emails (default: 7 days). Valid emails rarely change.
+      </ParamField>
+
+      <ParamField path="invalid" type="number" default="2592000">
+        TTL for invalid emails (default: 30 days). Invalid emails almost never become valid.
+      </ParamField>
+
+      <ParamField path="risky" type="number" default="86400">
+        TTL for risky emails (default: 1 day). Risky status may change over time.
+      </ParamField>
+
+      <ParamField path="unknown" type="number" default="0">
+        TTL for unknown status (default: 0, no caching). Retry on next request.
+      </ParamField>
+    </ParamField>
+  </ParamField>
+</ParamField>
+
+## Returns
+
+<ResponseField name="void" type="void">
+  This function does not return a value. Configuration is stored globally.
+</ResponseField>
+
+## Examples
+
+### Basic Configuration
+
+```typescript
+import { configure } from 'sniffmail';
+
+// Configure once at app startup
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+```
+
+### Custom Cache TTL
+
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: 'sniff_xxx',
+  cache: {
+    enabled: true,
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+### Disable Caching
+
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: false,
+  },
+});
+```
+
+### Redis Cache for Production
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: new RedisCache(redis),
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+### Custom Cache Store
+
+Implement the `CacheStore` interface for custom storage backends:
+
+```typescript
+import { configure, CacheStore } from 'sniffmail';
+
+class CustomCache implements CacheStore {
+  async get(key: string): Promise<string | null> {
+    // Your implementation
+    return null;
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    // Your implementation
+  }
+
+  async delete(key: string): Promise<void> {
+    // Your implementation (optional)
+  }
+}
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new CustomCache(),
+  },
+});
+```
+
+## Environment Variables
+
+Instead of hardcoding your API key, use environment variables:
+
+```bash
+# .env
+SNIFFMAIL_API_KEY=sniff_xxxxx
+```
+
+```typescript
+import { configure } from 'sniffmail';
+
+// API key automatically read from process.env.SNIFFMAIL_API_KEY
+configure({});
+
+// Or explicitly pass it
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+```
+
+## Configuration Best Practices
+
+### 1. Configure Once at Startup
+
+```typescript
+// app.ts or index.ts
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+
+// Rest of your application...
+```
+
+### 2. Use Redis for Production
+
+The default in-memory cache is lost on restart. Use Redis for persistent caching:
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL);
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+### 3. Adjust TTL Based on Use Case
+
+For high-volume applications that prioritize freshness:
+
+```typescript
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    ttl: {
+      safe: 86400,    // 1 day instead of 7
+      invalid: 604800, // 7 days instead of 30
+      risky: 3600,     // 1 hour instead of 1 day
+      unknown: 0,      // Never cache
+    },
+  },
+});
+```
+
+### 4. Disable Cache for Testing
+
+```typescript
+if (process.env.NODE_ENV === 'test') {
+  configure({
+    apiKey: process.env.SNIFFMAIL_API_KEY,
+    cache: { enabled: false },
+  });
+}
+```
+
+## Default Values
+
+If you don't call `configure()`, these defaults are used:
+
+```typescript
+{
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: MemoryCache (built-in),
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+}
+```
+
+## Cache Storage Details
+
+### In-Memory Cache (Default)
+
+- **Pros**: Zero setup, fast
+- **Cons**: Lost on restart, not shared across instances
+- **Use case**: Development, single-instance apps
+
+### Redis Cache
+
+- **Pros**: Persistent, shared across instances, production-ready
+- **Cons**: Requires Redis server
+- **Use case**: Production deployments, multi-instance apps
+
+```typescript
+import { RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  host: 'localhost',
+  port: 6379,
+  password: 'your-password',
+});
+
+configure({
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+## Related
+
+- [validateEmail](/api/validate-email) - Single email validation
+- [validateEmails](/api/validate-emails) - Batch validation
+- [Get API Key](https://sniffmail.io) - Sign up for free API access

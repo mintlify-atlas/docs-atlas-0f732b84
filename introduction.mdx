@@ -1,0 +1,95 @@
+---
+title: Introduction
+description: A comprehensive email validation library that detects disposable/burner email addresses and verifies mailbox existence via SMTP
+---
+
+# Sniffmail SDK
+
+Sniffmail is a comprehensive email validation library that detects disposable and burner email addresses while verifying mailbox existence through SMTP. Built for developers who need reliable email validation without the enterprise pricing.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Syntax Validation" icon="check">
+    Validates email format using industry-standard regex patterns
+  </Card>
+  
+  <Card title="Disposable Email Detection" icon="shield">
+    Blocks burner/temporary email addresses using multiple sources:
+    - GitHub disposable email blocklist (26,000+ domains)
+    - Scraped domains from temp mail providers
+    - Live-discovered domains from temp mail APIs
+    - DeBounce API real-time detection
+  </Card>
+  
+  <Card title="MX Record Lookup" icon="server">
+    Verifies the domain has mail servers configured
+  </Card>
+  
+  <Card title="Deep SMTP Verification" icon="magnifying-glass">
+    Verifies the mailbox actually exists (powered by Sniffmail API)
+  </Card>
+  
+  <Card title="Caching" icon="database">
+    In-memory or Redis caching to avoid redundant checks
+  </Card>
+  
+  <Card title="Batch Processing" icon="list">
+    Validate multiple emails with concurrency control
+  </Card>
+</CardGroup>
+
+## Pricing
+
+Up to **85% cheaper** than ZeroBounce, NeverBounce, and Hunter.
+
+| Tier | Verifications | Rate Limit | Price |
+|------|---------------|------------|-------|
+| Free | 500/month | 10 req/min | $0 |
+| Starter | 25,000/month | 60 req/min | $29/mo |
+| Pro | 100,000/month | 200 req/min | $79/mo |
+| Scale | 200,000/month | 200 req/min | $149/mo |
+
+Also available: **Credit Packs** for pay-as-you-go usage (as low as $0.001/email).
+
+Get your API key at [https://sniffmail.io](https://sniffmail.io)
+
+## Quick Links
+
+<CardGroup cols={3}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get started with npm, yarn, or pnpm
+  </Card>
+  
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Validate your first email in 2 minutes
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/validate-email">
+    Explore all available methods and types
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Syntax Validation">
+    First, the email format is validated using regex patterns to ensure it follows standard email syntax.
+  </Step>
+  
+  <Step title="Disposable Detection">
+    The domain is checked against multiple blocklists including GitHub's 26,000+ disposable domains, scraped domains, and the DeBounce API.
+  </Step>
+  
+  <Step title="MX Record Verification">
+    DNS lookups verify that the domain has valid mail server (MX) records configured.
+  </Step>
+  
+  <Step title="SMTP Verification (Optional)">
+    With deep mode enabled, the library connects to the mail server via SMTP to verify the specific mailbox exists and can receive mail.
+  </Step>
+</Steps>
+
+<Note>
+  Basic validation (syntax + disposable + MX check) is **completely FREE** and requires no API key. Deep SMTP verification requires a Sniffmail API key.
+</Note>

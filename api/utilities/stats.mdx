@@ -1,0 +1,237 @@
+---
+title: 'Stats'
+description: 'Get statistics about blocklists, domains, and cache'
+---
+
+## getValidatorStats()
+
+Returns statistics about all validation sources including blocklists, discovered domains, and API caches.
+
+```typescript
+import { getValidatorStats } from 'sniffmail';
+
+const stats = getValidatorStats();
+console.log(stats);
+```
+
+### Returns
+
+<ResponseField name="githubBlocklist" type="object">
+  Statistics from the GitHub disposable email blocklist.
+  
+  <Expandable title="properties">
+    <ResponseField name="count" type="number">
+      Number of domains in the GitHub blocklist.
+    </ResponseField>
+    
+    <ResponseField name="loaded" type="boolean">
+      Whether the blocklist has been successfully loaded.
+    </ResponseField>
+    
+    <ResponseField name="lastFetch" type="number">
+      Unix timestamp (in milliseconds) of when the blocklist was last fetched.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="scrapedDomains" type="object">
+  Statistics from scraped temp mail provider domains.
+  
+  <Expandable title="properties">
+    <ResponseField name="count" type="number">
+      Number of scraped domains loaded.
+    </ResponseField>
+    
+    <ResponseField name="loaded" type="boolean">
+      Whether scraped domains have been successfully loaded.
+    </ResponseField>
+    
+    <ResponseField name="lastFetch" type="number">
+      Unix timestamp (in milliseconds) of when domains were last scraped.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="discoveredDomains" type="object">
+  Statistics from live-discovered domains via GitHub Actions.
+  
+  <Expandable title="properties">
+    <ResponseField name="totalDomains" type="number">
+      Total number of discovered domains loaded from disk.
+    </ResponseField>
+    
+    <ResponseField name="lastLoad" type="number">
+      Unix timestamp (in milliseconds) of when the domains file was last loaded.
+    </ResponseField>
+    
+    <ResponseField name="healthy" type="boolean">
+      Whether the discovered domains source is healthy (no warnings).
+    </ResponseField>
+    
+    <ResponseField name="healthWarnings" type="string[]">
+      Array of health warning messages if any issues detected.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="debounceCache" type="object">
+  Statistics from the DeBounce API cache.
+  
+  <Expandable title="properties">
+    <ResponseField name="size" type="number">
+      Number of entries cached from DeBounce API calls.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "githubBlocklist": {
+    "count": 26847,
+    "loaded": true,
+    "lastFetch": 1709467200000
+  },
+  "scrapedDomains": {
+    "count": 543,
+    "loaded": true,
+    "lastFetch": 1709467180000
+  },
+  "discoveredDomains": {
+    "totalDomains": 1247,
+    "lastLoad": 1709467150000,
+    "healthy": true,
+    "healthWarnings": []
+  },
+  "debounceCache": {
+    "size": 42
+  }
+}
+```
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Monitoring blocklist health">
+    Check that all blocklists are loaded and up-to-date:
+    
+    ```typescript
+    const stats = getValidatorStats();
+    
+    if (!stats.githubBlocklist.loaded) {
+      console.warn('GitHub blocklist failed to load');
+    }
+    
+    if (!stats.discoveredDomains.healthy) {
+      console.warn('Discovered domains issues:', stats.discoveredDomains.healthWarnings);
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Display coverage metrics">
+    Show total domain coverage in your dashboard:
+    
+    ```typescript
+    const stats = getValidatorStats();
+    
+    const totalCoverage = 
+      stats.githubBlocklist.count +
+      stats.scrapedDomains.count +
+      stats.discoveredDomains.totalDomains;
+    
+    console.log(`Blocking ${totalCoverage.toLocaleString()} disposable domains`);
+    ```
+  </Accordion>
+  
+  <Accordion title="Cache performance tracking">
+    Monitor how many domains are being cached from DeBounce API:
+    
+    ```typescript
+    const stats = getValidatorStats();
+    
+    console.log(`DeBounce cache size: ${stats.debounceCache.size} entries`);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## addDiscoveredDomain()
+
+Manually add a domain to the discovered domains list. Useful for blocking domains you identify as disposable.
+
+```typescript
+import { addDiscoveredDomain } from 'sniffmail';
+
+await addDiscoveredDomain('suspicious-mail.com');
+```
+
+### Parameters
+
+<ParamField path="domain" type="string" required>
+  The domain name to add to the discovered domains list. Will be normalized to lowercase.
+</ParamField>
+
+### Returns
+
+<ResponseField name="void" type="Promise<void>">
+  Resolves when the domain has been added and the file has been updated.
+</ResponseField>
+
+### Example
+
+```typescript
+import { addDiscoveredDomain, isDisposableDomain } from 'sniffmail';
+
+// Add a suspicious domain
+await addDiscoveredDomain('throwaway-email.net');
+
+// Verify it's now blocked
+if (isDisposableDomain('throwaway-email.net')) {
+  console.log('Domain successfully added to blocklist');
+}
+```
+
+<Note>
+  The domain is persisted to `src/data/discovered-domains.json` and will be automatically loaded on future runs.
+</Note>
+
+---
+
+## reloadDiscoveredDomains()
+
+Manually reload the discovered domains list from disk. Useful if the file has been updated externally (e.g., by a GitHub Action).
+
+```typescript
+import { reloadDiscoveredDomains } from 'sniffmail';
+
+await reloadDiscoveredDomains();
+```
+
+### Returns
+
+<ResponseField name="domains" type="Promise<string[]>">
+  Resolves to an empty array after reloading (kept for backward compatibility).
+</ResponseField>
+
+### Example
+
+```typescript
+import { reloadDiscoveredDomains, getValidatorStats } from 'sniffmail';
+
+// Before reload
+const before = getValidatorStats();
+console.log(`Domains before: ${before.discoveredDomains.totalDomains}`);
+
+// Reload from disk
+await reloadDiscoveredDomains();
+
+// After reload
+const after = getValidatorStats();
+console.log(`Domains after: ${after.discoveredDomains.totalDomains}`);
+```
+
+<Info>
+  The discovered domains file is automatically reloaded every hour, so manual reloading is typically not necessary.
+</Info>

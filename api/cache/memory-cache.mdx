@@ -1,0 +1,223 @@
+---
+title: 'MemoryCache'
+description: 'In-memory cache store for email validation results'
+---
+
+## Overview
+
+`MemoryCache` is a simple in-memory cache implementation that stores validation results in the application's memory. It's the default cache store used by Sniffmail SDK and is ideal for single-instance applications or development environments.
+
+<Note>
+  Cache entries are automatically expired when their TTL (time-to-live) elapses. Expired entries are removed on access.
+</Note>
+
+## Class Definition
+
+```typescript
+import { MemoryCache } from 'sniffmail';
+
+class MemoryCache implements CacheStore {
+  async get(key: string): Promise<string | null>;
+  async set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  async delete(key: string): Promise<void>;
+  clear(): void;
+  size(): number;
+}
+```
+
+## Constructor
+
+```typescript
+const cache = new MemoryCache();
+```
+
+The `MemoryCache` constructor takes no parameters. It initializes an empty in-memory store.
+
+## Methods
+
+### get()
+
+Retrieves a value from the cache by key.
+
+```typescript
+const value = await cache.get('sniffmail:user@example.com');
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to retrieve
+</ParamField>
+
+**Returns:** `Promise<string | null>` - The cached value, or `null` if not found or expired
+
+### set()
+
+Stores a value in the cache with a TTL.
+
+```typescript
+await cache.set('sniffmail:user@example.com', '{"valid":true}', 604800);
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to store
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The value to cache (typically JSON-stringified validation result)
+</ParamField>
+
+<ParamField path="ttlSeconds" type="number" required>
+  Time-to-live in seconds. If `<= 0`, the value will not be cached.
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+### delete()
+
+Removes a specific entry from the cache.
+
+```typescript
+await cache.delete('sniffmail:user@example.com');
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to remove
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+### clear()
+
+Removes all entries from the cache.
+
+```typescript
+cache.clear();
+```
+
+**Returns:** `void`
+
+### size()
+
+Returns the number of entries currently in the cache (including expired but not yet accessed entries).
+
+```typescript
+const count = cache.size();
+console.log(`Cache has ${count} entries`);
+```
+
+**Returns:** `number` - The number of cached entries
+
+## Usage Examples
+
+### Default Usage (Automatic)
+
+`MemoryCache` is used by default when no cache store is configured:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+// Automatically uses MemoryCache
+const result = await validateEmail('user@example.com');
+console.log(result.cached); // true on subsequent calls
+```
+
+### Explicit Configuration
+
+```typescript
+import { configure, MemoryCache } from 'sniffmail';
+
+const cache = new MemoryCache();
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: cache,
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+### Manual Cache Operations
+
+```typescript
+import { MemoryCache } from 'sniffmail';
+
+const cache = new MemoryCache();
+
+// Store a value
+await cache.set('mykey', 'myvalue', 3600); // 1 hour TTL
+
+// Retrieve it
+const value = await cache.get('mykey');
+console.log(value); // 'myvalue'
+
+// Check cache size
+console.log(cache.size()); // 1
+
+// Remove specific entry
+await cache.delete('mykey');
+
+// Clear all entries
+cache.clear();
+```
+
+## When to Use MemoryCache
+
+<Check>
+  **Good for:**
+  - Single-instance applications
+  - Development and testing
+  - Low to moderate traffic
+  - Simple deployment scenarios
+  - Applications without Redis infrastructure
+</Check>
+
+<Warning>
+  **Not recommended for:**
+  - Multi-instance deployments (each instance has separate cache)
+  - High-memory constraints
+  - Applications requiring cache persistence across restarts
+  - Distributed systems
+</Warning>
+
+## Limitations
+
+1. **Not Shared Across Instances** - Each application instance maintains its own cache
+2. **Memory Usage** - Cache grows in memory; no automatic size limits
+3. **No Persistence** - Cache is lost when the application restarts
+4. **No TTL Background Cleanup** - Expired entries remain in memory until accessed
+
+## Performance
+
+- **Get Operations:** O(1) - Instant lookup via JavaScript Map
+- **Set Operations:** O(1) - Instant insertion
+- **Memory:** Approximately 200-500 bytes per cached email result
+
+<Tip>
+  For production deployments with multiple instances, consider using [RedisCache](/api/cache/redis-cache) instead.
+</Tip>
+
+## CacheStore Interface
+
+`MemoryCache` implements the `CacheStore` interface:
+
+```typescript
+interface CacheStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  delete?(key: string): Promise<void>;
+}
+```
+
+You can create custom cache implementations by implementing this interface.
+
+## Related
+
+- [RedisCache](/api/cache/redis-cache) - Redis-backed cache for distributed systems
+- [configure()](/api/configuration) - Global SDK configuration
+- [validateEmail()](/api/validation/validate-email) - Email validation with caching

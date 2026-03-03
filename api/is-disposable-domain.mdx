@@ -1,0 +1,234 @@
+---
+title: 'isDisposableDomain'
+description: 'Quick synchronous check if a domain is disposable (no API key needed)'
+---
+
+## Function Signature
+
+```typescript
+function isDisposableDomain(domain: string): boolean
+```
+
+Performs a fast, synchronous check to determine if a domain is a known disposable/burner email provider. This function:
+
+- **No API key required** - Works completely offline
+- **No network calls** - Instant response
+- **No async** - Synchronous, returns immediately
+- **Free** - No usage limits or costs
+
+Checks against multiple blocklists:
+1. **GitHub blocklist** - 26,000+ known disposable domains
+2. **Scraped domains** - Domains from temp mail providers
+3. **Discovered domains** - Dynamically discovered disposable domains
+
+## Parameters
+
+<ParamField path="domain" type="string" required>
+  The domain to check (e.g., `tempmail.com`). Will be normalized to lowercase.
+  
+  Can be just the domain part (e.g., `tempmail.com`) or extracted from a full email address.
+</ParamField>
+
+## Returns
+
+<ResponseField name="boolean" type="boolean">
+  Returns `true` if the domain is found in any disposable email blocklist, `false` otherwise.
+</ResponseField>
+
+## Examples
+
+### Basic Usage
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+if (isDisposableDomain('tempmail.com')) {
+  console.log('Blocked!');
+}
+// Output: Blocked!
+
+if (isDisposableDomain('gmail.com')) {
+  console.log('Blocked!');
+} else {
+  console.log('Allowed');
+}
+// Output: Allowed
+```
+
+### Extract Domain from Email
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+function checkEmail(email: string): boolean {
+  const [, domain] = email.split('@');
+  return isDisposableDomain(domain);
+}
+
+console.log(checkEmail('user@temp-mail.org')); // true
+console.log(checkEmail('user@gmail.com'));     // false
+```
+
+### Form Validation (Synchronous)
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+function validateEmailInput(email: string): string | null {
+  const [, domain] = email.split('@');
+  
+  if (!domain) {
+    return 'Invalid email format';
+  }
+  
+  if (isDisposableDomain(domain)) {
+    return 'Disposable email addresses are not allowed';
+  }
+  
+  return null; // Valid
+}
+
+// Can be used in synchronous contexts
+const error = validateEmailInput('user@guerrillamail.com');
+if (error) {
+  console.log(error);
+  // Output: Disposable email addresses are not allowed
+}
+```
+
+### Client-Side Validation
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+// React component example
+function SignupForm() {
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState('');
+
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    
+    const [, domain] = value.split('@');
+    if (domain && isDisposableDomain(domain)) {
+      setError('Disposable email addresses are not allowed');
+    } else {
+      setError('');
+    }
+  };
+
+  return (
+    <input 
+      type="email" 
+      value={email} 
+      onChange={(e) => handleEmailChange(e.target.value)}
+    />
+    {error && <span className="error">{error}</span>}
+  );
+}
+```
+
+### Bulk Domain Filtering
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+const domains = [
+  'gmail.com',
+  'tempmail.com',
+  'yahoo.com',
+  'guerrillamail.com',
+  'outlook.com'
+];
+
+const legitimate = domains.filter(d => !isDisposableDomain(d));
+console.log(legitimate);
+// ['gmail.com', 'yahoo.com', 'outlook.com']
+
+const disposable = domains.filter(isDisposableDomain);
+console.log(disposable);
+// ['tempmail.com', 'guerrillamail.com']
+```
+
+### Combine with Full Validation
+
+```typescript
+import { isDisposableDomain, validateEmail } from 'sniffmail';
+
+async function validateSignupEmail(email: string) {
+  const [, domain] = email.split('@');
+  
+  // Quick synchronous check first
+  if (isDisposableDomain(domain)) {
+    return {
+      valid: false,
+      reason: 'Disposable email not allowed',
+    };
+  }
+  
+  // Then do full async validation
+  const result = await validateEmail(email);
+  return result;
+}
+```
+
+## When to Use
+
+### Use `isDisposableDomain()` when:
+
+- You need **instant** validation (no async)
+- You're in a **synchronous context** (no await allowed)
+- You want to check **before** making API calls
+- You're building **client-side** validation
+- You don't need MX or SMTP verification
+- You want **zero API costs**
+
+### Use `validateEmail()` when:
+
+- You need **comprehensive** validation (MX, SMTP)
+- You can use **async/await**
+- You want to verify **mailbox existence**
+- You're doing **server-side** validation
+- You need detailed error reasons
+
+## Comparison
+
+| Feature | `isDisposableDomain()` | `validateEmail()` |
+|---------|------------------------|-------------------|
+| Disposable check | ✅ Yes | ✅ Yes |
+| MX record check | ❌ No | ✅ Yes |
+| SMTP verification | ❌ No | ✅ Yes (deep mode) |
+| Syntax validation | ❌ No | ✅ Yes |
+| API key required | ❌ No | ⚠️ Only for deep mode |
+| Network calls | ❌ No | ✅ Yes |
+| Async | ❌ No (sync) | ✅ Yes |
+| Speed | ⚡ Instant | 🐌 100-500ms |
+| Cost | 💰 Free | 💰 Free (basic), Credits (deep) |
+
+## Coverage
+
+The blocklists checked by `isDisposableDomain()` include:
+
+- **26,000+ domains** from GitHub disposable email blocklist
+- **Scraped domains** from temp mail provider APIs
+- **Discovered domains** added dynamically via `addDiscoveredDomain()`
+
+Common disposable providers detected:
+- `tempmail.com`, `guerrillamail.com`, `10minutemail.com`
+- `mailinator.com`, `maildrop.cc`, `throwaway.email`
+- `temp-mail.org`, `getnada.com`, `yopmail.com`
+- And 26,000+ more
+
+## Updating Blocklists
+
+The blocklists are bundled with the SDK and updated with each release. To get the latest blocklists:
+
+```bash
+npm update sniffmail
+```
+
+## Related
+
+- [validateEmail](/api/validate-email) - Full email validation with MX and SMTP checks
+- [validateEmails](/api/validate-emails) - Batch validation
+- [configure](/api/configure) - Global SDK configuration

@@ -1,0 +1,354 @@
+---
+title: 'Error Classes'
+description: 'Error types thrown by Sniffmail SDK'
+---
+
+## ApiKeyNotConfiguredError
+
+Thrown when attempting to use deep validation mode without configuring an API key.
+
+### Class Definition
+
+```typescript
+class ApiKeyNotConfiguredError extends Error {
+  name: 'ApiKeyNotConfiguredError';
+}
+```
+
+### Properties
+
+<ResponseField name="name" type="string">
+  Always set to `'ApiKeyNotConfiguredError'` for easy identification.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable error message:
+  
+  ```
+  API key not configured. Call configure({ apiKey: "sniff_xxx" }) or set SNIFFMAIL_API_KEY env var. Get your free API key at https://sniffmail.io
+  ```
+</ResponseField>
+
+### When It's Thrown
+
+This error is thrown when:
+- You call `validateEmail()` with `{ deep: true }`
+- No API key has been configured via `configure()` or `SNIFFMAIL_API_KEY` env var
+
+### Example Usage
+
+```typescript
+import { 
+  validateEmail, 
+  ApiKeyNotConfiguredError,
+  configure 
+} from 'sniffmail';
+
+try {
+  // This will throw if API key is not configured
+  const result = await validateEmail('user@example.com', { deep: true });
+  console.log(result);
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    console.error('Please configure your API key first!');
+    console.error('Get one at: https://sniffmail.io');
+    
+    // Configure the API key
+    configure({ apiKey: process.env.SNIFFMAIL_API_KEY });
+  }
+}
+```
+
+<Warning>
+  Always configure your API key before using deep validation:
+  
+  ```typescript
+  import { configure } from 'sniffmail';
+  
+  configure({ apiKey: 'sniff_xxxxx' });
+  ```
+</Warning>
+
+---
+
+## SniffmailError
+
+General API error thrown when the Sniffmail API returns an error or a network issue occurs.
+
+### Class Definition
+
+```typescript
+class SniffmailError extends Error {
+  name: 'SniffmailError';
+  statusCode?: number;
+  responseData?: unknown;
+}
+```
+
+### Properties
+
+<ResponseField name="name" type="string">
+  Always set to `'SniffmailError'` for easy identification.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable error message describing what went wrong.
+</ResponseField>
+
+<ResponseField name="statusCode" type="number" optional>
+  HTTP status code from the API response (if applicable).
+  
+  Common status codes:
+  - `401` - Invalid API key
+  - `403` - Usage limit exceeded
+  - `429` - Rate limit exceeded
+  - `500` - Internal server error
+</ResponseField>
+
+<ResponseField name="responseData" type="unknown" optional>
+  Raw response data from the API (if available). Useful for debugging.
+</ResponseField>
+
+### When It's Thrown
+
+This error is thrown when:
+- The API returns a non-200 status code
+- Network request fails
+- Request times out (after 30 seconds)
+- Invalid API key is used
+- Usage or rate limits are exceeded
+
+### Example Usage
+
+```typescript
+import { 
+  validateEmail, 
+  SniffmailError,
+  ApiKeyNotConfiguredError 
+} from 'sniffmail';
+
+try {
+  const result = await validateEmail('user@example.com', { deep: true });
+  console.log(result);
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    // Handle missing API key
+    console.error('API key not configured');
+    console.error('Get one at: https://sniffmail.io');
+  } 
+  else if (error instanceof SniffmailError) {
+    // Handle API errors
+    console.error(`API Error: ${error.message}`);
+    
+    if (error.statusCode === 401) {
+      console.error('Invalid API key. Check your configuration.');
+    } 
+    else if (error.statusCode === 403) {
+      console.error('Usage limit exceeded. Upgrade at https://sniffmail.io');
+    } 
+    else if (error.statusCode === 429) {
+      console.error('Rate limited. Slow down your requests.');
+      // Implement exponential backoff
+    }
+    else {
+      console.error('Unexpected error:', error.responseData);
+    }
+  }
+  else {
+    // Handle unexpected errors
+    console.error('Unknown error:', error);
+  }
+}
+```
+
+### Common Error Scenarios
+
+<AccordionGroup>
+  <Accordion title="401 - Invalid API Key">
+    ```typescript
+    // Error message:
+    // "Invalid API key. Get your free API key at https://sniffmail.io"
+    
+    if (error instanceof SniffmailError && error.statusCode === 401) {
+      // Double-check your API key configuration
+      console.error('Invalid API key. Please verify:');
+      console.error('1. API key is correct');
+      console.error('2. API key is not expired');
+      console.error('3. API key has "sniff_" prefix');
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="403 - Usage Limit Exceeded">
+    ```typescript
+    // Error message:
+    // "Usage limit exceeded. Upgrade your plan at https://sniffmail.io"
+    
+    if (error instanceof SniffmailError && error.statusCode === 403) {
+      // You've exceeded your monthly quota
+      console.error('Monthly limit reached');
+      console.error('Options:');
+      console.error('1. Upgrade plan at https://sniffmail.io');
+      console.error('2. Purchase credit pack');
+      console.error('3. Wait until next billing cycle');
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="429 - Rate Limited">
+    ```typescript
+    // Error message:
+    // "Rate limit exceeded. Please slow down your requests."
+    
+    if (error instanceof SniffmailError && error.statusCode === 429) {
+      // Implement exponential backoff
+      async function validateWithBackoff(email: string, retries = 3) {
+        for (let i = 0; i < retries; i++) {
+          try {
+            return await validateEmail(email, { deep: true });
+          } catch (err) {
+            if (err instanceof SniffmailError && err.statusCode === 429) {
+              const delay = Math.pow(2, i) * 1000; // 1s, 2s, 4s
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+            throw err;
+          }
+        }
+        throw new Error('Max retries exceeded');
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Request Timeout">
+    ```typescript
+    // Error message:
+    // "Request timed out"
+    
+    if (error instanceof SniffmailError && error.message.includes('timed out')) {
+      console.error('Request timed out after 30 seconds');
+      console.error('This may indicate:');
+      console.error('1. Network connectivity issues');
+      console.error('2. API service degradation');
+      console.error('3. Firewall blocking requests');
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Always catch errors" icon="shield-check">
+    Wrap validation calls in try-catch blocks to handle API errors gracefully.
+  </Card>
+  
+  <Card title="Check error types" icon="filter">
+    Use `instanceof` to differentiate between error types and handle appropriately.
+  </Card>
+  
+  <Card title="Implement retries" icon="rotate">
+    For rate limit errors (429), implement exponential backoff retry logic.
+  </Card>
+  
+  <Card title="Log error details" icon="bug">
+    Log `statusCode` and `responseData` for debugging production issues.
+  </Card>
+</CardGroup>
+
+### Complete Error Handling Example
+
+```typescript
+import { 
+  configure,
+  validateEmail, 
+  ApiKeyNotConfiguredError,
+  SniffmailError 
+} from 'sniffmail';
+
+// Configure API key at startup
+configure({ apiKey: process.env.SNIFFMAIL_API_KEY });
+
+async function safeValidateEmail(email: string) {
+  try {
+    const result = await validateEmail(email, { deep: true });
+    
+    if (!result.valid) {
+      return {
+        success: false,
+        error: `Invalid email: ${result.reason}`,
+        result
+      };
+    }
+    
+    return {
+      success: true,
+      result
+    };
+  } 
+  catch (error) {
+    if (error instanceof ApiKeyNotConfiguredError) {
+      return {
+        success: false,
+        error: 'System configuration error. Please contact support.',
+        critical: true
+      };
+    }
+    
+    if (error instanceof SniffmailError) {
+      // Handle different status codes
+      switch (error.statusCode) {
+        case 401:
+          return {
+            success: false,
+            error: 'Authentication error. Please contact support.',
+            critical: true
+          };
+        
+        case 403:
+          return {
+            success: false,
+            error: 'Service quota exceeded. Please contact support.',
+            critical: true
+          };
+        
+        case 429:
+          return {
+            success: false,
+            error: 'Service temporarily busy. Please try again.',
+            retryable: true
+          };
+        
+        default:
+          return {
+            success: false,
+            error: 'Validation service error. Please try again.',
+            retryable: true
+          };
+      }
+    }
+    
+    // Unknown error
+    console.error('Unexpected validation error:', error);
+    return {
+      success: false,
+      error: 'An unexpected error occurred.',
+      critical: true
+    };
+  }
+}
+
+// Usage
+const result = await safeValidateEmail('user@example.com');
+if (result.success) {
+  console.log('Email is valid:', result.result);
+} else {
+  console.error('Validation failed:', result.error);
+  if (result.critical) {
+    // Alert ops team
+  } else if (result.retryable) {
+    // Retry later
+  }
+}
+```

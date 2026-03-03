@@ -1,0 +1,391 @@
+---
+title: 'Deep Email Verification (SMTP)'
+description: 'Verify that email addresses actually exist using SMTP mailbox verification'
+icon: 'magnifying-glass'
+---
+
+Deep verification uses **SMTP protocol** to verify that a mailbox actually exists. This catches fake emails like `fakeperson123@gmail.com` that pass syntax and MX checks but don't exist.
+
+## Why Deep Verification?
+
+Basic validation can't detect:
+- Non-existent mailboxes on valid domains (e.g., `notreal@gmail.com`)
+- Full mailboxes that can't receive mail
+- Disabled or inactive accounts
+- Catch-all domains that accept any address
+
+Deep verification solves this by connecting to the actual mail server via SMTP.
+
+<Note>
+Deep verification requires a Sniffmail API key. Get your free API key (500 verifications/month) at [sniffmail.io](https://sniffmail.io).
+</Note>
+
+## Setup
+
+<Steps>
+  <Step title="Get your API key">
+    Sign up at [sniffmail.io](https://sniffmail.io) to get your free API key.
+    
+    | Tier | Verifications | Rate Limit | Price |
+    |------|---------------|------------|-------|
+    | Free | 500/month | 10 req/min | $0 |
+    | Starter | 25,000/month | 60 req/min | $29/mo |
+    | Pro | 100,000/month | 200 req/min | $79/mo |
+    | Scale | 200,000/month | 200 req/min | $149/mo |
+  </Step>
+
+  <Step title="Configure API key">
+    Set your API key using environment variables or the `configure()` function:
+    
+    <Tabs>
+      <Tab title="Environment Variable">
+        ```bash
+        # .env
+        SNIFFMAIL_API_KEY=sniff_xxxxx
+        ```
+        
+        The SDK automatically reads `SNIFFMAIL_API_KEY` from environment variables.
+      </Tab>
+      
+      <Tab title="configure() Function">
+        ```typescript
+        import { configure } from 'sniffmail';
+        
+        // Configure once at app startup
+        configure({
+          apiKey: process.env.SNIFFMAIL_API_KEY,
+        });
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Enable deep mode">
+    ```typescript
+    import { validateEmail } from 'sniffmail';
+    
+    const result = await validateEmail('someone@gmail.com', { deep: true });
+    
+    if (result.smtp?.is_reachable === 'invalid') {
+      console.log('Mailbox does not exist!');
+    }
+    ```
+  </Step>
+</Steps>
+
+## Understanding SMTP Results
+
+When `deep: true` is enabled, the `smtp` field contains detailed verification data:
+
+```typescript
+{
+  is_reachable: 'safe' | 'risky' | 'invalid' | 'unknown',
+  can_connect: boolean,      // Could connect to SMTP server
+  is_deliverable: boolean,   // Mailbox accepts mail
+  is_catch_all: boolean      // Domain accepts all addresses
+}
+```
+
+### Reachability Status
+
+| Status | Meaning | Action |
+|--------|---------|--------|
+| `safe` | Email exists and is deliverable | ✅ Accept |
+| `risky` | Email might bounce (catch-all, full mailbox) | ⚠️ Use with caution |
+| `invalid` | Email does not exist | ❌ Reject |
+| `unknown` | Could not determine (timeout, blocked, etc.) | ❓ Retry later or accept |
+
+<Warning>
+`risky` status indicates the email might be deliverable but has risk factors:
+- Catch-all domain (accepts any address)
+- Full mailbox (may bounce)
+- Temporary SMTP issues
+
+Consider your use case when handling `risky` emails.
+</Warning>
+
+## Common Use Cases
+
+### Invoice Validation
+
+Ensure invoices reach real recipients:
+
+```typescript
+import { configure, validateEmail } from 'sniffmail';
+
+// Configure once at app startup
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+
+async function verifyEmailForInvoice(email: string): Promise<boolean> {
+  const result = await validateEmail(email, { deep: true });
+
+  if (!result.valid) {
+    console.log(`Email ${email} failed: ${result.reason}`);
+    return false;
+  }
+
+  if (result.smtp?.is_reachable === 'invalid') {
+    console.log(`Email ${email} does not exist`);
+    return false;
+  }
+
+  if (result.smtp?.is_reachable === 'risky') {
+    console.log(`Warning: ${email} is risky (catch-all or full inbox)`);
+    // Decide based on your business needs
+  }
+
+  return true;
+}
+
+// Usage
+const isValid = await verifyEmailForInvoice('customer@company.com');
+if (!isValid) {
+  throw new Error('Please provide a valid email address for invoice delivery');
+}
+```
+
+### Critical Account Actions
+
+Verify emails before password resets or account recovery:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+async function sendPasswordReset(email: string) {
+  // Verify the email actually exists
+  const result = await validateEmail(email, { deep: true });
+
+  if (!result.valid || result.smtp?.is_reachable === 'invalid') {
+    throw new Error('Email address not found');
+  }
+
+  // Only send reset email if mailbox exists
+  await emailService.sendPasswordReset(email);
+}
+```
+
+### Premium Signup Validation
+
+For paid services, ensure users provide real emails:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+async function validatePremiumSignup(email: string) {
+  const result = await validateEmail(email, { deep: true });
+
+  // Reject disposable emails
+  if (result.disposable) {
+    throw new Error('Please use a permanent email address');
+  }
+
+  // Reject non-existent mailboxes
+  if (result.smtp?.is_reachable === 'invalid') {
+    throw new Error('This email address does not exist');
+  }
+
+  // Warn about risky addresses
+  if (result.smtp?.is_reachable === 'risky') {
+    console.warn(`User signed up with risky email: ${email}`);
+  }
+
+  return result;
+}
+```
+
+## Interpreting Validation Reasons
+
+When deep mode is enabled, additional validation reasons become available:
+
+```typescript
+const result = await validateEmail('test@example.com', { deep: true });
+
+switch (result.reason) {
+  case 'invalid_syntax':
+    console.log('Email format is invalid');
+    break;
+  case 'disposable':
+    console.log('Disposable email address');
+    break;
+  case 'no_mx_records':
+    console.log('Domain has no mail servers');
+    break;
+  case 'mailbox_not_found':
+    console.log('Mailbox does not exist');
+    break;
+  case 'mailbox_full':
+    console.log('Mailbox is full');
+    break;
+  case 'mailbox_disabled':
+    console.log('Mailbox is disabled');
+    break;
+  case 'catch_all':
+    console.log('Domain accepts all emails (catch-all)');
+    break;
+  case 'smtp_error':
+    console.log('Could not connect to mail server');
+    break;
+  case null:
+    console.log('Email is valid');
+    break;
+}
+```
+
+## Expected Output Examples
+
+### Safe Email (Valid Mailbox)
+
+```typescript
+const result = await validateEmail('real.person@gmail.com', { deep: true });
+
+console.log(result);
+// {
+//   email: 'real.person@gmail.com',
+//   valid: true,
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: {
+//     is_reachable: 'safe',
+//     can_connect: true,
+//     is_deliverable: true,
+//     is_catch_all: false
+//   },
+//   cached: false
+// }
+```
+
+### Invalid Mailbox
+
+```typescript
+const result = await validateEmail('fakeperson123@gmail.com', { deep: true });
+
+console.log(result);
+// {
+//   email: 'fakeperson123@gmail.com',
+//   valid: false,
+//   reason: 'mailbox_not_found',
+//   disposable: false,
+//   mx: true,
+//   smtp: {
+//     is_reachable: 'invalid',
+//     can_connect: true,
+//     is_deliverable: false,
+//     is_catch_all: false
+//   },
+//   cached: false
+// }
+```
+
+### Risky Email (Catch-All Domain)
+
+```typescript
+const result = await validateEmail('anything@catchall-domain.com', { deep: true });
+
+console.log(result);
+// {
+//   email: 'anything@catchall-domain.com',
+//   valid: false,
+//   reason: 'catch_all',
+//   disposable: false,
+//   mx: true,
+//   smtp: {
+//     is_reachable: 'risky',
+//     can_connect: true,
+//     is_deliverable: true,
+//     is_catch_all: true
+//   },
+//   cached: false
+// }
+```
+
+### Unknown Status (SMTP Timeout)
+
+```typescript
+const result = await validateEmail('user@problematic-server.com', { deep: true });
+
+console.log(result);
+// {
+//   email: 'user@problematic-server.com',
+//   valid: true,  // Fails open on errors
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: {
+//     is_reachable: 'unknown',
+//     can_connect: false,
+//     is_deliverable: false,
+//     is_catch_all: false
+//   },
+//   cached: false
+// }
+```
+
+<Note>
+The SDK "fails open" on verification errors - if SMTP verification fails due to network issues or timeouts, it returns `valid: true` with `is_reachable: 'unknown'` rather than blocking legitimate emails.
+</Note>
+
+## Caching
+
+Deep verification results are automatically cached to avoid redundant API calls:
+
+| Status | Default TTL | Reason |
+|--------|-------------|--------|
+| `safe` | 7 days | Valid emails rarely change |
+| `invalid` | 30 days | Invalid emails almost never become valid |
+| `risky` | 1 day | Status may change |
+| `unknown` | 0 (no cache) | Retry on next request |
+
+Check if a result came from cache:
+
+```typescript
+const result = await validateEmail('user@example.com', { deep: true });
+
+if (result.cached) {
+  console.log('Result was served from cache');
+}
+```
+
+### Custom Cache TTL
+
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+## Performance Considerations
+
+<Warning>
+SMTP verification takes 2-5 seconds per email because it:
+1. Looks up MX records
+2. Connects to the mail server
+3. Performs SMTP handshake
+4. Verifies the mailbox
+
+For multiple emails, use [batch processing](/guides/batch-processing) with concurrency control.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/guides/error-handling">
+    Handle API errors and rate limits
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Validate multiple emails efficiently
+  </Card>
+</CardGroup>

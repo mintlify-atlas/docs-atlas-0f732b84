@@ -1,0 +1,485 @@
+---
+title: 'Batch Email Processing'
+description: 'Efficiently validate multiple emails with concurrency control'
+icon: 'layer-group'
+---
+
+Batch processing allows you to validate multiple emails efficiently with **concurrency control** to manage rate limits and optimize performance.
+
+## Overview
+
+The `validateEmails()` function validates multiple emails in parallel with configurable concurrency:
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+const { results, summary } = await validateEmails(
+  ['a@gmail.com', 'b@tempmail.com', 'c@company.com'],
+  {
+    deep: true,
+    concurrency: 5,  // Max parallel requests (default: 5)
+  }
+);
+
+console.log(summary);
+// { total: 3, valid: 2, invalid: 0, disposable: 1, unknown: 0 }
+```
+
+<Note>
+Batch processing is especially useful for:
+- Cleaning email lists
+- Bulk user imports
+- CRM data validation
+- Marketing list hygiene
+</Note>
+
+## Basic Usage
+
+<Steps>
+  <Step title="Import the function">
+    ```typescript
+    import { validateEmails } from 'sniffmail';
+    ```
+  </Step>
+
+  <Step title="Validate multiple emails">
+    ```typescript
+    const emails = [
+      'john@gmail.com',
+      'fake@tempmail.com',
+      'sarah@company.com',
+      'invalid-email',
+      'nonexistent@gmail.com'
+    ];
+    
+    const { results, summary } = await validateEmails(emails);
+    ```
+  </Step>
+
+  <Step title="Process results">
+    ```typescript
+    // Filter valid emails
+    const validEmails = results
+      .filter(r => r.valid)
+      .map(r => r.email);
+    
+    console.log(`Valid: ${validEmails.length}/${emails.length}`);
+    console.log(summary);
+    // { total: 5, valid: 2, invalid: 2, disposable: 1, unknown: 0 }
+    ```
+  </Step>
+</Steps>
+
+## Response Structure
+
+The `BatchValidationResult` contains:
+
+```typescript
+{
+  results: ValidationResult[],  // Array of individual results
+  summary: {
+    total: number,              // Total emails validated
+    valid: number,              // Valid, deliverable emails
+    invalid: number,            // Invalid emails (syntax, MX, mailbox)
+    disposable: number,         // Disposable/burner emails
+    unknown: number             // Unknown status (SMTP timeouts)
+  }
+}
+```
+
+## Common Use Cases
+
+### Bulk Email List Cleaning
+
+Clean a marketing list by removing invalid and disposable emails:
+
+```typescript
+import { configure, validateEmails } from 'sniffmail';
+
+configure({ apiKey: process.env.SNIFFMAIL_API_KEY });
+
+async function cleanEmailList(emails: string[]): Promise<string[]> {
+  const { results } = await validateEmails(emails, {
+    deep: true,
+    concurrency: 10,
+  });
+
+  // Only keep emails that are safe and deliverable
+  return results
+    .filter(r => r.valid && r.smtp?.is_reachable === 'safe')
+    .map(r => r.email);
+}
+
+// Usage
+const dirtyList = [
+  'john@gmail.com',
+  'fake123@gmail.com',
+  'user@tempmail.com',
+  'sarah@company.com',
+];
+
+const cleanList = await cleanEmailList(dirtyList);
+console.log(`Cleaned ${dirtyList.length} → ${cleanList.length} emails`);
+```
+
+### User Import Validation
+
+Validate emails during bulk user imports:
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+interface ImportUser {
+  name: string;
+  email: string;
+  role: string;
+}
+
+async function importUsers(users: ImportUser[]) {
+  // Validate all emails
+  const emails = users.map(u => u.email);
+  const { results } = await validateEmails(emails, {
+    deep: true,
+    concurrency: 5,
+  });
+
+  // Create a map of email → validation result
+  const validationMap = new Map(
+    results.map(r => [r.email, r])
+  );
+
+  // Filter users with valid emails
+  const validUsers = users.filter(user => {
+    const result = validationMap.get(user.email.toLowerCase());
+    return result?.valid && !result.disposable;
+  });
+
+  // Import valid users
+  await db.users.insertMany(validUsers);
+
+  // Report rejected emails
+  const rejectedUsers = users.filter(user => {
+    const result = validationMap.get(user.email.toLowerCase());
+    return !result?.valid || result.disposable;
+  });
+
+  return {
+    imported: validUsers.length,
+    rejected: rejectedUsers.length,
+    rejectedEmails: rejectedUsers.map(u => ({
+      email: u.email,
+      reason: validationMap.get(u.email.toLowerCase())?.reason
+    }))
+  };
+}
+```
+
+### CRM Data Cleaning
+
+Validate contacts in your CRM and flag bad emails:
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+async function auditCrmContacts(contacts: Array<{ id: string; email: string }>) {
+  const emails = contacts.map(c => c.email);
+  
+  const { results, summary } = await validateEmails(emails, {
+    deep: true,
+    concurrency: 10,
+  });
+
+  console.log(`
+CRM Audit Results:
+  Total: ${summary.total}
+  Valid: ${summary.valid}
+  Invalid: ${summary.invalid}
+  Disposable: ${summary.disposable}
+  Unknown: ${summary.unknown}
+  `);
+
+  // Update CRM with validation results
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+    const result = results[i];
+
+    if (!result.valid) {
+      await crm.updateContact(contact.id, {
+        emailStatus: 'invalid',
+        emailReason: result.reason,
+      });
+    } else if (result.smtp?.is_reachable === 'risky') {
+      await crm.updateContact(contact.id, {
+        emailStatus: 'risky',
+        emailReason: result.reason,
+      });
+    }
+  }
+}
+```
+
+### Progressive Validation with Progress Tracking
+
+Validate large lists with progress updates:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+import pLimit from 'p-limit';
+
+async function validateWithProgress(
+  emails: string[],
+  concurrency: number = 5,
+  onProgress?: (processed: number, total: number) => void
+) {
+  const limit = pLimit(concurrency);
+  let processed = 0;
+
+  const results = await Promise.all(
+    emails.map((email) =>
+      limit(async () => {
+        const result = await validateEmail(email, { deep: true });
+        processed++;
+        onProgress?.(processed, emails.length);
+        return result;
+      })
+    )
+  );
+
+  return results;
+}
+
+// Usage
+const emails = [...]; // 10,000 emails
+
+const results = await validateWithProgress(emails, 10, (processed, total) => {
+  const percent = ((processed / total) * 100).toFixed(1);
+  console.log(`Progress: ${processed}/${total} (${percent}%)`);
+});
+```
+
+## Concurrency Control
+
+The `concurrency` option controls how many emails are validated in parallel:
+
+```typescript
+const { results } = await validateEmails(emails, {
+  concurrency: 5  // Process 5 emails at a time
+});
+```
+
+<Tabs>
+  <Tab title="Low Concurrency (1-5)">
+    ```typescript
+    // Good for free tier (10 req/min rate limit)
+    const { results } = await validateEmails(emails, {
+      deep: true,
+      concurrency: 2
+    });
+    ```
+    
+    **Use when:**
+    - On free tier (10 req/min limit)
+    - Validating small lists (&lt;100 emails)
+    - Want to be conservative with rate limits
+  </Tab>
+
+  <Tab title="Medium Concurrency (5-10)">
+    ```typescript
+    // Good for Starter/Pro tiers
+    const { results } = await validateEmails(emails, {
+      deep: true,
+      concurrency: 5  // Default
+    });
+    ```
+    
+    **Use when:**
+    - On Starter tier (60 req/min)
+    - Validating medium lists (100-1000 emails)
+    - Default recommendation
+  </Tab>
+
+  <Tab title="High Concurrency (10-20)">
+    ```typescript
+    // Good for Scale tier (200 req/min)
+    const { results } = await validateEmails(emails, {
+      deep: true,
+      concurrency: 15
+    });
+    ```
+    
+    **Use when:**
+    - On Pro/Scale tier (200 req/min)
+    - Validating large lists (1000+ emails)
+    - Need maximum throughput
+  </Tab>
+</Tabs>
+
+<Warning>
+Set concurrency based on your rate limit:
+
+| Tier | Rate Limit | Recommended Concurrency |
+|------|------------|------------------------|
+| Free | 10 req/min | 1-2 |
+| Starter | 60 req/min | 5-10 |
+| Pro | 200 req/min | 10-15 |
+| Scale | 200 req/min | 10-20 |
+
+Exceeding rate limits will result in 429 errors. See [Error Handling](/guides/error-handling).
+</Warning>
+
+## Batch Options
+
+All validation options are supported in batch mode:
+
+```typescript
+const { results } = await validateEmails(emails, {
+  deep: true,          // Enable SMTP verification
+  concurrency: 5,      // Max parallel requests
+  checkMx: true,       // Check MX records
+  useDeBounce: true,   // Use DeBounce API
+  timeout: 5,          // DNS timeout in seconds
+});
+```
+
+## Processing Results
+
+### Filter by Status
+
+```typescript
+const { results } = await validateEmails(emails, { deep: true });
+
+// Valid and safe emails
+const safeEmails = results
+  .filter(r => r.valid && r.smtp?.is_reachable === 'safe')
+  .map(r => r.email);
+
+// Disposable emails
+const disposableEmails = results
+  .filter(r => r.disposable)
+  .map(r => r.email);
+
+// Invalid mailboxes
+const invalidMailboxes = results
+  .filter(r => r.reason === 'mailbox_not_found')
+  .map(r => r.email);
+
+// Risky emails (catch-all, full inbox)
+const riskyEmails = results
+  .filter(r => r.smtp?.is_reachable === 'risky')
+  .map(r => r.email);
+```
+
+### Generate Report
+
+```typescript
+const { results, summary } = await validateEmails(emails, { deep: true });
+
+const report = {
+  summary,
+  breakdown: {
+    safe: results.filter(r => r.smtp?.is_reachable === 'safe').length,
+    risky: results.filter(r => r.smtp?.is_reachable === 'risky').length,
+    invalid: results.filter(r => r.smtp?.is_reachable === 'invalid').length,
+    unknown: results.filter(r => r.smtp?.is_reachable === 'unknown').length,
+  },
+  reasonBreakdown: results.reduce((acc, r) => {
+    if (r.reason) {
+      acc[r.reason] = (acc[r.reason] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>),
+};
+
+console.log(JSON.stringify(report, null, 2));
+```
+
+## Performance Tips
+
+<Steps>
+  <Step title="Use appropriate concurrency">
+    Match concurrency to your rate limit tier to maximize throughput without hitting limits.
+  </Step>
+
+  <Step title="Enable caching">
+    Results are cached automatically in deep mode. Validating the same email twice will use cache:
+    
+    ```typescript
+    configure({
+      apiKey: process.env.SNIFFMAIL_API_KEY,
+      cache: { enabled: true }
+    });
+    ```
+  </Step>
+
+  <Step title="Basic validation first">
+    For large lists, run basic validation first to filter out obvious issues:
+    
+    ```typescript
+    // Step 1: Basic validation (free, fast)
+    const { results: basicResults } = await validateEmails(emails);
+    const passedBasic = basicResults.filter(r => r.valid).map(r => r.email);
+    
+    // Step 2: Deep validation only for emails that passed
+    const { results: deepResults } = await validateEmails(passedBasic, {
+      deep: true,
+      concurrency: 10
+    });
+    ```
+  </Step>
+</Steps>
+
+## Expected Output Example
+
+```typescript
+const emails = [
+  'john@gmail.com',
+  'fake123@gmail.com',
+  'user@tempmail.com',
+  'invalid-email',
+  'sarah@company.com'
+];
+
+const { results, summary } = await validateEmails(emails, { deep: true });
+
+console.log(summary);
+// {
+//   total: 5,
+//   valid: 2,        // john@gmail.com, sarah@company.com
+//   invalid: 2,      // fake123@gmail.com, invalid-email
+//   disposable: 1,   // user@tempmail.com
+//   unknown: 0
+// }
+
+console.log(results[0]);
+// {
+//   email: 'john@gmail.com',
+//   valid: true,
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: { is_reachable: 'safe', can_connect: true, is_deliverable: true, is_catch_all: false },
+//   cached: false
+// }
+
+console.log(results[2]);
+// {
+//   email: 'user@tempmail.com',
+//   valid: false,
+//   reason: 'disposable',
+//   disposable: true,
+//   mx: true,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/guides/error-handling">
+    Handle rate limits and API errors
+  </Card>
+  <Card title="Deep Verification" icon="magnifying-glass" href="/guides/deep-verification">
+    Learn about SMTP verification
+  </Card>
+</CardGroup>

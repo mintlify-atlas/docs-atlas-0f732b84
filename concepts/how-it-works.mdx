@@ -1,0 +1,326 @@
+---
+title: "How It Works"
+description: "Understand Sniffmail's multi-layered email validation pipeline"
+---
+
+## Overview
+
+Sniffmail uses a comprehensive, multi-layered validation pipeline that combines multiple data sources and verification techniques to detect invalid, disposable, and unreachable email addresses.
+
+The validation process runs through up to 5 distinct checks, each designed to catch different types of problematic emails:
+
+```
+┌──────────────┐
+│ Email Input  │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────────────┐
+│  1. Syntax Check     │  ← Basic format validation
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│ 2. Disposable Check  │  ← Multiple blocklists
+│    • GitHub (26K)    │
+│    • Scraped domains │
+│    • Discovered      │
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│  3. MX Lookup        │  ← Domain has mail servers?
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│  4. DeBounce API     │  ← Real-time disposable detection
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│ 5. SMTP Verify       │  ← Deep mode: mailbox exists?
+│    (Optional)        │
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────┐
+│    Result    │
+└──────────────┘
+```
+
+## Validation Pipeline
+
+### Step 1: Syntax Validation
+
+The first check validates the email format using a regex pattern:
+
+```typescript
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+```
+
+This ensures:
+- Email has exactly one `@` symbol
+- Local part (before @) is not empty
+- Domain part (after @) contains at least one dot
+- No whitespace characters
+
+**Source:** `src/validator.ts:81-88`
+
+<Info>
+If syntax validation fails, the pipeline stops immediately and returns `reason: 'invalid_syntax'`.
+</Info>
+
+### Step 2: Disposable Domain Detection
+
+Sniffmail checks against **three separate blocklists** to maximize coverage of disposable/burner email providers:
+
+#### GitHub Blocklist (26,000+ domains)
+
+Community-maintained list from [disposable/disposable-email-domains](https://github.com/disposable/disposable-email-domains).
+
+```typescript
+// Fetched from GitHub on initialization
+// Auto-refreshes every 24 hours
+const GITHUB_BLOCKLIST_URL = 
+  'https://raw.githubusercontent.com/disposable/disposable-email-domains/master/domains_strict.txt';
+```
+
+**Features:**
+- Checks exact domain matches
+- Checks subdomain matches (e.g., `mail.tempmail.com` → `tempmail.com`)
+- Auto-refreshes daily to stay current
+
+**Source:** `src/sources/github-blocklist.ts:8-70`
+
+#### Scraped Domains
+
+Domains collected by scraping popular temporary email provider websites. This catches new services not yet in the GitHub list.
+
+**Source:** `src/sources/scraped-domains.ts`
+
+#### Discovered Domains
+
+Domains discovered dynamically from temp mail APIs during runtime. When Sniffmail finds a disposable domain through other checks, it adds it to this list for faster future lookups.
+
+**Source:** `src/sources/discovered-domains.ts`
+
+<Tip>
+The `isDisposableDomain()` function checks all three blocklists synchronously with no network calls, making it extremely fast for real-time validation.
+</Tip>
+
+### Step 3: MX Record Lookup
+
+Verifies the domain has valid mail exchange (MX) records using `node-email-verifier`:
+
+```typescript
+const nodeResult = await emailValidator(normalizedEmail, {
+  checkMx: true,
+  checkDisposable: true,
+  detailed: true,
+  timeout: '5s',
+  cache: {
+    enabled: true,
+    defaultTtl: 3600000, // 1 hour
+    maxSize: 1000,
+  },
+});
+```
+
+This step:
+- Queries DNS for MX records
+- Verifies at least one mail server exists
+- Has built-in caching to avoid redundant DNS lookups
+- Times out after 5 seconds (configurable)
+
+**Source:** `src/validator.ts:103-140`
+
+<Note>
+You can disable MX checking with `checkMx: false`, but this is not recommended as it reduces accuracy.
+</Note>
+
+### Step 4: DeBounce API Check
+
+Real-time check against [DeBounce's free disposable detection API](https://debounce.com/free-disposable-check-api/):
+
+```typescript
+const response = await fetch(
+  `https://disposable.debounce.io/?email=${encodeURIComponent(email)}`
+);
+const data = await response.json();
+const isDisposable = data.disposable === 'true';
+```
+
+**Benefits:**
+- Free and unlimited
+- Real-time detection of new disposable services
+- 3-second timeout to prevent blocking
+- Results cached for 24 hours
+
+**Source:** `src/sources/debounce-api.ts:17-55`
+
+<Info>
+Disable this check with `useDeBounce: false` if you need faster validation or are experiencing network issues.
+</Info>
+
+### Step 5: SMTP Verification (Deep Mode)
+
+The optional final step verifies the mailbox actually exists by connecting to the mail server:
+
+```typescript
+const result = await validateEmail('test@gmail.com', { deep: true });
+```
+
+This performs:
+1. **Connection test** — Can connect to SMTP server?
+2. **RCPT TO verification** — Does mailbox accept mail?
+3. **Catch-all detection** — Does domain accept all addresses?
+4. **Deliverability check** — Is mailbox available and not full?
+
+**Requires:** Sniffmail API key (free tier: 500/month)
+
+**Returns:**
+```typescript
+{
+  smtp: {
+    is_reachable: 'safe' | 'risky' | 'invalid' | 'unknown',
+    can_connect: boolean,      // SMTP connection successful
+    is_deliverable: boolean,   // Mailbox accepts mail
+    is_catch_all: boolean,     // Domain is catch-all
+  }
+}
+```
+
+**Source:** `src/validator.ts:165-186`, `src/api/client.ts`
+
+## Reachability Statuses
+
+Deep mode returns one of four statuses:
+
+| Status | Meaning | Example |
+|--------|---------|----------|
+| `safe` | Mailbox exists and is deliverable | Real Gmail account |
+| `risky` | Exists but may bounce | Catch-all domain, full mailbox |
+| `invalid` | Mailbox does not exist | `fakeperson123@gmail.com` |
+| `unknown` | Could not determine | Timeout, blocked by firewall |
+
+<Steps>
+
+<Step title="safe">
+Email exists and will definitely accept mail. Safe to send.
+
+```typescript
+if (result.smtp?.is_reachable === 'safe') {
+  // Send welcome email
+}
+```
+</Step>
+
+<Step title="risky">
+Email might accept mail, but delivery is uncertain:
+- **Catch-all domain** — Server accepts all addresses (can't verify existence)
+- **Full mailbox** — Inbox is over quota
+- **Greylisting** — Temporary SMTP delay
+
+```typescript
+if (result.smtp?.is_reachable === 'risky') {
+  // Allow signup but monitor bounce rate
+}
+```
+</Step>
+
+<Step title="invalid">
+Mailbox definitely does not exist. Reject immediately.
+
+```typescript
+if (result.smtp?.is_reachable === 'invalid') {
+  return { error: 'This email address does not exist' };
+}
+```
+</Step>
+
+<Step title="unknown">
+Could not verify due to technical issues:
+- SMTP timeout
+- Firewall blocking verification
+- Server temporarily unavailable
+
+```typescript
+if (result.smtp?.is_reachable === 'unknown') {
+  // Fail open: allow but flag for review
+}
+```
+</Step>
+
+</Steps>
+
+## Error Handling Strategy
+
+<Note>
+**Fail Open Philosophy:** If a verification step fails due to network issues or timeouts, Sniffmail defaults to allowing the email. This prevents false negatives from disrupting your application.
+</Note>
+
+The validator only rejects emails when it has **positive confirmation** they're invalid:
+
+```typescript
+try {
+  // ... validation logic
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    throw error; // Configuration errors must be fixed
+  }
+  
+  // Network errors, timeouts, etc. → fail open
+  return { valid: true, reason: null };
+}
+```
+
+**Source:** `src/validator.ts:187-201`
+
+## Performance Optimizations
+
+### Early Exit
+
+The pipeline stops as soon as it finds a reason to reject:
+
+```typescript
+if (!syntaxValid) return { valid: false, reason: 'invalid_syntax' };
+if (isDisposable) return { valid: false, reason: 'disposable' };
+if (!hasMX) return { valid: false, reason: 'no_mx_records' };
+```
+
+This means most invalid emails are rejected in &lt;10ms.
+
+### Multi-Level Caching
+
+1. **MX lookup cache** (1 hour) — Reduces DNS queries
+2. **DeBounce cache** (24 hours) — Reduces API calls
+3. **Result cache** (varies) — Reduces full validations
+
+See [Caching](/concepts/caching) for details.
+
+### Subdomain Checking
+
+When checking disposable domains, Sniffmail also checks parent domains:
+
+```typescript
+// Input: mail.tempmail.com
+// Checks:
+// 1. mail.tempmail.com
+// 2. tempmail.com  ← Blocked here
+```
+
+This catches subdomains of known disposable providers.
+
+**Source:** `src/sources/github-blocklist.ts:60-67`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Validation Modes" icon="sliders" href="/concepts/validation-modes">
+    Learn about quick mode vs deep mode
+  </Card>
+  <Card title="Caching" icon="database" href="/concepts/caching">
+    Optimize performance with smart caching
+  </Card>
+</CardGroup>

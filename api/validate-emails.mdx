@@ -1,0 +1,282 @@
+---
+title: 'validateEmails'
+description: 'Validate multiple email addresses in parallel with concurrency control'
+---
+
+## Function Signature
+
+```typescript
+function validateEmails(
+  emails: string[],
+  options?: BatchValidationOptions
+): Promise<BatchValidationResult>
+```
+
+Validates multiple email addresses with concurrency control. Uses the same validation logic as [validateEmail](/api/validate-email), but processes emails in parallel for better performance.
+
+## Parameters
+
+<ParamField path="emails" type="string[]" required>
+  Array of email addresses to validate. Each email will be normalized (trimmed and lowercased).
+</ParamField>
+
+<ParamField path="options" type="BatchValidationOptions">
+  Optional validation configuration
+
+  <ParamField path="concurrency" type="number" default="5">
+    Maximum number of concurrent validations. Controls parallelism to avoid overwhelming your system or hitting API rate limits.
+  </ParamField>
+
+  <ParamField path="deep" type="boolean" default="false">
+    Enable deep SMTP verification to check if mailboxes actually exist. Requires API key.
+  </ParamField>
+
+  <ParamField path="checkMx" type="boolean" default="true">
+    Check MX records to verify domains have mail servers.
+  </ParamField>
+
+  <ParamField path="useDeBounce" type="boolean" default="true">
+    Use DeBounce API for real-time disposable domain detection.
+  </ParamField>
+
+  <ParamField path="timeout" type="number" default="5">
+    Timeout for DNS lookups in seconds.
+  </ParamField>
+</ParamField>
+
+## Returns
+
+<ResponseField name="BatchValidationResult" type="object">
+  Contains individual results and aggregate summary
+
+  <ResponseField name="results" type="ValidationResult[]">
+    Array of validation results, one for each input email. See [validateEmail](/api/validate-email) for the structure of each result.
+  </ResponseField>
+
+  <ResponseField name="summary" type="object">
+    Aggregate statistics across all validations
+
+    <ResponseField name="total" type="number">
+      Total number of emails validated
+    </ResponseField>
+
+    <ResponseField name="valid" type="number">
+      Number of valid emails
+    </ResponseField>
+
+    <ResponseField name="invalid" type="number">
+      Number of invalid emails (excluding disposable)
+    </ResponseField>
+
+    <ResponseField name="disposable" type="number">
+      Number of disposable/burner email addresses
+    </ResponseField>
+
+    <ResponseField name="unknown" type="number">
+      Number of emails with unknown SMTP reachability (only in deep mode)
+    </ResponseField>
+  </ResponseField>
+</ResponseField>
+
+## Examples
+
+### Basic Batch Validation
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+const { results, summary } = await validateEmails(
+  ['a@gmail.com', 'b@temp-mail.org', 'c@company.com']
+);
+
+console.log(summary);
+/*
+{
+  total: 3,
+  valid: 2,
+  invalid: 0,
+  disposable: 1,
+  unknown: 0
+}
+*/
+
+// Process individual results
+results.forEach(result => {
+  if (!result.valid) {
+    console.log(`${result.email} failed: ${result.reason}`);
+  }
+});
+```
+
+### Deep Mode with Concurrency Control
+
+```typescript
+import { configure, validateEmails } from 'sniffmail';
+
+configure({ apiKey: process.env.SNIFFMAIL_API_KEY });
+
+const { results, summary } = await validateEmails(
+  ['user1@gmail.com', 'user2@yahoo.com', 'user3@outlook.com'],
+  {
+    deep: true,
+    concurrency: 5  // Process up to 5 emails simultaneously
+  }
+);
+
+console.log(summary);
+/*
+{
+  total: 3,
+  valid: 2,
+  invalid: 1,
+  disposable: 0,
+  unknown: 0
+}
+*/
+```
+
+### Bulk Email List Cleaning
+
+```typescript
+import { configure, validateEmails } from 'sniffmail';
+
+configure({ apiKey: process.env.SNIFFMAIL_API_KEY });
+
+async function cleanEmailList(emails: string[]): Promise<string[]> {
+  const { results } = await validateEmails(emails, {
+    deep: true,
+    concurrency: 10,
+  });
+
+  return results
+    .filter(r => r.valid && r.smtp?.is_reachable === 'safe')
+    .map(r => r.email);
+}
+
+const rawList = [
+  'alice@gmail.com',
+  'bob@temp-mail.org',
+  'fakeperson@yahoo.com',
+  'carol@company.com'
+];
+
+const cleanedList = await cleanEmailList(rawList);
+console.log(cleanedList);
+// ['alice@gmail.com', 'carol@company.com']
+```
+
+### Filter by Validation Status
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+const { results } = await validateEmails(
+  ['a@gmail.com', 'b@tempmail.com', 'invalid-email', 'c@company.com']
+);
+
+// Get only valid emails
+const validEmails = results
+  .filter(r => r.valid)
+  .map(r => r.email);
+
+// Get only disposable emails
+const disposableEmails = results
+  .filter(r => r.disposable)
+  .map(r => r.email);
+
+// Get emails with syntax errors
+const syntaxErrors = results
+  .filter(r => r.reason === 'invalid_syntax')
+  .map(r => r.email);
+
+console.log({ validEmails, disposableEmails, syntaxErrors });
+```
+
+### Progress Tracking for Large Lists
+
+```typescript
+import { validateEmail } from 'sniffmail';
+import pLimit from 'p-limit';
+
+async function validateWithProgress(emails: string[], concurrency = 5) {
+  const limit = pLimit(concurrency);
+  let completed = 0;
+
+  const promises = emails.map(email =>
+    limit(async () => {
+      const result = await validateEmail(email, { deep: true });
+      completed++;
+      console.log(`Progress: ${completed}/${emails.length}`);
+      return result;
+    })
+  );
+
+  return await Promise.all(promises);
+}
+
+const results = await validateWithProgress(largeEmailList, 10);
+```
+
+## Performance Considerations
+
+### Concurrency Limits
+
+The `concurrency` parameter controls how many validations run simultaneously:
+
+- **Too low (1-2)**: Slow for large lists
+- **Optimal (5-10)**: Good balance of speed and resource usage
+- **Too high (50+)**: May hit API rate limits or overwhelm your system
+
+### Recommended Concurrency by Tier
+
+| Sniffmail Plan | Rate Limit | Recommended Concurrency |
+|----------------|------------|-------------------------|
+| Free | 10 req/min | 2-3 |
+| Starter | 60 req/min | 5-10 |
+| Pro | 200 req/min | 10-20 |
+| Scale | 200 req/min | 10-20 |
+
+### Caching Benefits
+
+Batch validation benefits heavily from caching. If you're validating the same emails multiple times:
+
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+Cached results return instantly without consuming API credits.
+
+## Error Handling
+
+```typescript
+import { validateEmails, SniffmailError } from 'sniffmail';
+
+try {
+  const { results, summary } = await validateEmails(emails, { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError) {
+    if (error.statusCode === 429) {
+      console.error('Rate limited. Reduce concurrency or wait.');
+    }
+  }
+}
+```
+
+## Related
+
+- [validateEmail](/api/validate-email) - Single email validation
+- [configure](/api/configure) - Set API key and concurrency limits
+- [isDisposableDomain](/api/is-disposable-domain) - Quick synchronous disposable check

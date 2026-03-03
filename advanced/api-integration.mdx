@@ -1,0 +1,518 @@
+---
+title: 'API Integration'
+description: 'Deep dive into Sniffmail API integration, authentication, and rate limits'
+---
+
+## Overview
+
+The Sniffmail SDK communicates with the Sniffmail API for deep SMTP verification. This guide covers API endpoints, authentication, error handling, and rate limiting.
+
+<Info>
+Basic validation (syntax, disposable detection, MX records) runs locally and doesn't require an API key. Only deep SMTP verification (`deep: true`) calls the API.
+</Info>
+
+## API Endpoint
+
+The SDK connects to:
+
+```
+https://api.sniffmail.io
+```
+
+<Info>
+**Source:** `src/config.ts:3`
+</Info>
+
+### Available Endpoints
+
+#### `POST /verify`
+
+Verifies email deliverability via SMTP.
+
+**Request:**
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "input": "user@example.com",
+  "is_reachable": "safe",
+  "syntax": {
+    "address": "user@example.com",
+    "domain": "example.com",
+    "is_valid_syntax": true,
+    "username": "user"
+  },
+  "mx": {
+    "accepts_mail": true,
+    "records": [
+      {
+        "exchange": "mail.example.com",
+        "priority": 10
+      }
+    ]
+  },
+  "smtp": {
+    "can_connect_smtp": true,
+    "has_full_inbox": false,
+    "is_catch_all": false,
+    "is_deliverable": true,
+    "is_disabled": false
+  },
+  "misc": {
+    "is_disposable": false,
+    "is_role_account": false,
+    "gravatar_url": null
+  }
+}
+```
+
+<Info>
+**Source:** `src/api/types.ts:1-42`
+</Info>
+
+#### `GET /health`
+
+Health check endpoint for monitoring API availability.
+
+**Response:** HTTP 200 if API is healthy
+
+## Authentication
+
+The API requires authentication via API key. The SDK sends the key in two headers for compatibility:
+
+```typescript
+headers: {
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${apiKey}`,
+  'x-api-key': apiKey,
+}
+```
+
+<Info>
+**Source:** `src/api/client.ts:35-39`
+</Info>
+
+### Setting Your API Key
+
+#### Option 1: Environment Variable
+
+```bash
+export SNIFFMAIL_API_KEY=sniff_xxxxx
+```
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+// API key is automatically loaded from process.env.SNIFFMAIL_API_KEY
+const result = await validateEmail('user@example.com', { deep: true });
+```
+
+#### Option 2: Configuration
+
+```typescript
+import { configure, validateEmail } from 'sniffmail';
+
+configure({
+  apiKey: 'sniff_xxxxx',
+});
+
+const result = await validateEmail('user@example.com', { deep: true });
+```
+
+<Note>
+The SDK checks for the API key in this order:
+1. `configure({ apiKey })` setting
+2. `SNIFFMAIL_API_KEY` environment variable
+
+**Source:** `src/config.ts:38-40`
+</Note>
+
+### Get Your API Key
+
+Sign up for a free API key at [https://sniffmail.io](https://sniffmail.io)
+
+## Rate Limits
+
+Rate limits vary by plan:
+
+| Plan | Rate Limit | Monthly Quota |
+|------|------------|---------------|
+| Free | 10 req/min | 500 verifications |
+| Starter | 60 req/min | 25,000 verifications |
+| Pro | 200 req/min | 100,000 verifications |
+| Scale | 200 req/min | 200,000 verifications |
+
+<Warning>
+Exceeding rate limits returns HTTP 429. The SDK will throw a `SniffmailError` with details.
+</Warning>
+
+### Handling Rate Limits
+
+```typescript
+import { validateEmail, SniffmailError } from 'sniffmail';
+
+async function verifyWithRetry(email: string, retries = 3): Promise<any> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await validateEmail(email, { deep: true });
+    } catch (error) {
+      if (error instanceof SniffmailError && error.statusCode === 429) {
+        if (i < retries - 1) {
+          const delay = Math.pow(2, i) * 1000; // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+}
+```
+
+### Batch Validation with Concurrency Control
+
+Use the built-in `validateEmails()` function to respect rate limits:
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+const { results, summary } = await validateEmails(
+  ['a@example.com', 'b@example.com', 'c@example.com'],
+  {
+    deep: true,
+    concurrency: 5, // Max 5 parallel requests
+  }
+);
+
+console.log(`Validated ${summary.total} emails`);
+console.log(`Valid: ${summary.valid}, Invalid: ${summary.invalid}`);
+```
+
+<Note>
+For the free plan (10 req/min), use `concurrency: 1` or `concurrency: 2` to avoid rate limiting.
+</Note>
+
+## Error Handling
+
+The SDK provides two custom error classes:
+
+### `ApiKeyNotConfiguredError`
+
+Thrown when deep verification is requested without an API key:
+
+```typescript
+import { validateEmail, ApiKeyNotConfiguredError } from 'sniffmail';
+
+try {
+  await validateEmail('user@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    console.error('API key not set!');
+    console.error('Get your free key at https://sniffmail.io');
+  }
+}
+```
+
+<Info>
+**Source:** `src/api/client.ts:6-13`
+</Info>
+
+### `SniffmailError`
+
+Thrown for API errors with detailed information:
+
+```typescript
+export class SniffmailError extends Error {
+  public statusCode?: number;
+  public responseData?: unknown;
+
+  constructor(message: string, statusCode?: number, responseData?: unknown) {
+    super(message);
+    this.name = 'SniffmailError';
+    this.statusCode = statusCode;
+    this.responseData = responseData;
+  }
+}
+```
+
+<Info>
+**Source:** `src/api/client.ts:15-25`
+</Info>
+
+### HTTP Status Codes
+
+| Status | Error | Message |
+|--------|-------|----------|
+| 401 | Invalid API key | `Invalid API key. Get your free API key at https://sniffmail.io` |
+| 403 | Usage limit exceeded | `Usage limit exceeded. Upgrade your plan at https://sniffmail.io` |
+| 429 | Rate limit exceeded | `Rate limit exceeded. Please slow down your requests.` |
+| 5xx | Server error | `API returned {status}` |
+
+<Info>
+**Source:** `src/api/client.ts:57-85`
+</Info>
+
+### Complete Error Handling Example
+
+```typescript
+import {
+  validateEmail,
+  ApiKeyNotConfiguredError,
+  SniffmailError,
+} from 'sniffmail';
+
+async function safeValidate(email: string) {
+  try {
+    return await validateEmail(email, { deep: true });
+  } catch (error) {
+    if (error instanceof ApiKeyNotConfiguredError) {
+      console.error('Configuration error: API key missing');
+      return null;
+    }
+
+    if (error instanceof SniffmailError) {
+      switch (error.statusCode) {
+        case 401:
+          console.error('Invalid API key');
+          break;
+        case 403:
+          console.error('Quota exceeded - upgrade plan');
+          break;
+        case 429:
+          console.error('Rate limited - slow down requests');
+          break;
+        default:
+          console.error(`API error ${error.statusCode}: ${error.message}`);
+      }
+      return null;
+    }
+
+    // Unexpected error
+    console.error('Unexpected error:', error);
+    return null;
+  }
+}
+```
+
+## Timeout Configuration
+
+The SDK uses a 30-second timeout for API requests:
+
+```typescript
+const REQUEST_TIMEOUT = 30000; // 30 seconds
+```
+
+<Info>
+**Source:** `src/api/client.ts:4`
+</Info>
+
+Timeout errors are caught and wrapped:
+
+```typescript
+try {
+  const result = await validateEmail('user@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError && error.message.includes('timed out')) {
+    console.error('Request took longer than 30 seconds');
+  }
+}
+```
+
+## API Response Mapping
+
+The SDK transforms the API response into a `ValidationResult`:
+
+### API Response Types
+
+```typescript
+export type ApiReachableStatus = 'safe' | 'risky' | 'invalid' | 'unknown';
+
+export interface ApiResponse {
+  input: string;
+  is_reachable: ApiReachableStatus;
+  syntax: {
+    address: string;
+    domain: string;
+    is_valid_syntax: boolean;
+    username: string;
+  };
+  mx: {
+    accepts_mail: boolean;
+    records: Array<{
+      exchange: string;
+      priority: number;
+    }>;
+  };
+  smtp: {
+    can_connect_smtp: boolean;
+    has_full_inbox: boolean;
+    is_catch_all: boolean;
+    is_deliverable: boolean;
+    is_disabled: boolean;
+  };
+  misc: {
+    is_disposable: boolean;
+    is_role_account: boolean;
+    gravatar_url: string | null;
+  };
+}
+```
+
+<Info>
+**Source:** `src/api/types.ts:32-42`
+</Info>
+
+### Mapped Result
+
+The SDK maps the API response to this structure:
+
+```typescript
+export interface ValidationResult {
+  email: string;           // Normalized email
+  valid: boolean;          // Overall validity
+  reason: ValidationReason | null;
+  disposable: boolean;     // Is disposable email
+  mx: boolean;             // Has MX records
+  smtp: SmtpResult | null; // SMTP verification details
+  cached: boolean;         // Was from cache
+}
+
+export interface SmtpResult {
+  is_reachable: ReachableStatus;  // 'safe' | 'risky' | 'invalid' | 'unknown'
+  can_connect: boolean;           // Could connect to SMTP server
+  is_deliverable: boolean;        // Mailbox accepts mail
+  is_catch_all: boolean;          // Domain is catch-all
+}
+```
+
+<Info>
+**Source:** `src/types.ts:14-29`
+</Info>
+
+## Validation Reasons
+
+When `valid: false`, the `reason` field indicates why:
+
+```typescript
+export type ValidationReason =
+  | 'invalid_syntax'       // Email format invalid
+  | 'disposable'           // Disposable/burner email
+  | 'no_mx_records'        // No mail servers
+  | 'mailbox_not_found'    // Mailbox doesn't exist (deep)
+  | 'mailbox_full'         // Mailbox is full (deep)
+  | 'mailbox_disabled'     // Mailbox disabled (deep)
+  | 'catch_all'            // Catch-all domain (deep)
+  | 'smtp_error'           // SMTP connection failed (deep)
+  | null;                  // Valid email
+```
+
+<Info>
+**Source:** `src/types.ts:3-12`
+</Info>
+
+## Health Checks
+
+Monitor API availability:
+
+```typescript
+import { checkApiHealth } from 'sniffmail';
+
+const isHealthy = await checkApiHealth();
+
+if (!isHealthy) {
+  console.error('Sniffmail API is down or unreachable');
+}
+```
+
+<Info>
+**Source:** `src/api/client.ts:107-124`
+</Info>
+
+## Production Best Practices
+
+### 1. Cache Aggressively
+
+Use Redis or another persistent cache to minimize API calls:
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(new Redis()),
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+    },
+  },
+});
+```
+
+### 2. Handle Errors Gracefully
+
+Don't block user flows on validation errors:
+
+```typescript
+async function validateUserEmail(email: string): Promise<boolean> {
+  try {
+    const result = await validateEmail(email, { deep: true });
+    return result.valid;
+  } catch (error) {
+    // Log error but allow signup to continue
+    console.error('Email validation failed:', error);
+    return true; // Fail open
+  }
+}
+```
+
+### 3. Monitor Usage
+
+Track cache hit rates and API usage:
+
+```typescript
+let cacheHits = 0;
+let cacheMisses = 0;
+
+const result = await validateEmail(email, { deep: true });
+
+if (result.cached) {
+  cacheHits++;
+} else {
+  cacheMisses++;
+}
+
+console.log(`Cache hit rate: ${(cacheHits / (cacheHits + cacheMisses) * 100).toFixed(2)}%`);
+```
+
+### 4. Respect Rate Limits
+
+Use concurrency control for batch operations:
+
+```typescript
+import { validateEmails } from 'sniffmail';
+
+// Free plan: 10 req/min
+const { results } = await validateEmails(emails, {
+  deep: true,
+  concurrency: 2, // Stay well under limit
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Redis Cache" icon="database" href="/advanced/redis-cache">
+    Configure Redis caching
+  </Card>
+  <Card title="Custom Cache" icon="code" href="/advanced/custom-cache">
+    Implement custom cache stores
+  </Card>
+</CardGroup>

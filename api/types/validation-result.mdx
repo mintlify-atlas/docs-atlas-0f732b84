@@ -1,0 +1,187 @@
+---
+title: "ValidationResult"
+description: "Complete validation result with all checks performed"
+---
+
+## Interface
+
+The `ValidationResult` interface represents the complete output of email validation.
+
+```typescript
+export interface ValidationResult {
+  email: string;
+  valid: boolean;
+  reason: ValidationReason;
+  disposable: boolean;
+  mx: boolean;
+  smtp: SmtpResult | null;
+  cached: boolean;
+}
+```
+
+## Fields
+
+<ResponseField name="email" type="string" required>
+  The normalized email address that was validated (lowercased and trimmed)
+</ResponseField>
+
+<ResponseField name="valid" type="boolean" required>
+  Whether the email passed all validation checks. `true` means the email is deliverable.
+</ResponseField>
+
+<ResponseField name="reason" type="ValidationReason" required>
+  Why the email failed validation, or `null` if valid. See [ValidationReason](#validationreason-type) below.
+</ResponseField>
+
+<ResponseField name="disposable" type="boolean" required>
+  Whether the email is from a disposable/temporary email provider
+</ResponseField>
+
+<ResponseField name="mx" type="boolean" required>
+  Whether the domain has valid MX (mail exchange) records configured
+</ResponseField>
+
+<ResponseField name="smtp" type="SmtpResult | null">
+  Deep SMTP verification results. Only populated when `deep: true` option is used. See [SmtpResult](/api/types/smtp-result).
+</ResponseField>
+
+<ResponseField name="cached" type="boolean" required>
+  Whether this result was retrieved from cache (only applies to deep mode)
+</ResponseField>
+
+## ValidationReason Type
+
+The reason a validation failed:
+
+```typescript
+export type ValidationReason =
+  | 'invalid_syntax'
+  | 'disposable'
+  | 'no_mx_records'
+  | 'mailbox_not_found'
+  | 'mailbox_full'
+  | 'mailbox_disabled'
+  | 'catch_all'
+  | 'smtp_error'
+  | null;
+```
+
+### Reason Values
+
+- `invalid_syntax` - Email format is invalid
+- `disposable` - Email is from a disposable/temporary provider
+- `no_mx_records` - Domain has no MX records configured
+- `mailbox_not_found` - SMTP verification shows mailbox doesn't exist
+- `mailbox_full` - Mailbox storage is full
+- `mailbox_disabled` - Mailbox has been disabled
+- `catch_all` - Domain accepts all emails (catch-all)
+- `smtp_error` - SMTP server connection failed
+- `null` - Email is valid
+
+## Examples
+
+### Valid Email (Quick Mode)
+
+```typescript
+import { validateEmail } from '@sniffmail/sdk';
+
+const result = await validateEmail('user@example.com');
+
+// Result:
+{
+  email: 'user@example.com',
+  valid: true,
+  reason: null,
+  disposable: false,
+  mx: true,
+  smtp: null,
+  cached: false
+}
+```
+
+### Invalid Email - Disposable
+
+```typescript
+const result = await validateEmail('temp@temp-mail.org');
+
+// Result:
+{
+  email: 'temp@temp-mail.org',
+  valid: false,
+  reason: 'disposable',
+  disposable: true,
+  mx: false,
+  smtp: null,
+  cached: false
+}
+```
+
+### Invalid Email - No MX Records
+
+```typescript
+const result = await validateEmail('user@nonexistentdomain12345.com');
+
+// Result:
+{
+  email: 'user@nonexistentdomain12345.com',
+  valid: false,
+  reason: 'no_mx_records',
+  disposable: false,
+  mx: false,
+  smtp: null,
+  cached: false
+}
+```
+
+### Deep Validation with SMTP
+
+```typescript
+const result = await validateEmail('fakeperson@gmail.com', { deep: true });
+
+// Result:
+{
+  email: 'fakeperson@gmail.com',
+  valid: false,
+  reason: 'mailbox_not_found',
+  disposable: false,
+  mx: true,
+  smtp: {
+    is_reachable: 'invalid',
+    can_connect: true,
+    is_deliverable: false,
+    is_catch_all: false
+  },
+  cached: false
+}
+```
+
+### Cached Result
+
+```typescript
+// First call with deep mode
+await validateEmail('user@example.com', { deep: true });
+
+// Second call returns cached result
+const result = await validateEmail('user@example.com', { deep: true });
+
+// Result:
+{
+  email: 'user@example.com',
+  valid: true,
+  reason: null,
+  disposable: false,
+  mx: true,
+  smtp: {
+    is_reachable: 'safe',
+    can_connect: true,
+    is_deliverable: true,
+    is_catch_all: false
+  },
+  cached: true
+}
+```
+
+## Related Types
+
+- [SmtpResult](/api/types/smtp-result) - Deep SMTP verification details
+- [ValidationOptions](/api/types/validation-options) - Validation configuration options

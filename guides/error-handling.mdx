@@ -1,0 +1,494 @@
+---
+title: 'Error Handling'
+description: 'Handle API errors, rate limits, and validation failures gracefully'
+icon: 'triangle-exclamation'
+---
+
+Properly handling errors ensures your application gracefully handles API failures, rate limits, and configuration issues.
+
+## Error Types
+
+The Sniffmail SDK throws two main error types:
+
+### ApiKeyNotConfiguredError
+
+Thrown when deep verification is requested but no API key is configured:
+
+```typescript
+import { ApiKeyNotConfiguredError } from 'sniffmail';
+
+try {
+  const result = await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    console.error('API key not set. Get one at https://sniffmail.io');
+  }
+}
+```
+
+**Message:**
+```
+API key not configured. Call configure({ apiKey: "sniff_xxx" }) or set SNIFFMAIL_API_KEY env var. Get your free API key at https://sniffmail.io
+```
+
+### SniffmailError
+
+Thrown for API-related errors including rate limits, auth failures, and network issues:
+
+```typescript
+import { SniffmailError } from 'sniffmail';
+
+try {
+  const result = await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError) {
+    console.error(`API Error (${error.statusCode}): ${error.message}`);
+    console.error('Response data:', error.responseData);
+  }
+}
+```
+
+**Properties:**
+- `message: string` - Error description
+- `statusCode?: number` - HTTP status code (401, 403, 429, etc.)
+- `responseData?: unknown` - Raw API response data
+
+## Common Error Scenarios
+
+<Tabs>
+  <Tab title="401 - Invalid API Key">
+    ```typescript
+    import { validateEmail, SniffmailError } from 'sniffmail';
+
+    try {
+      const result = await validateEmail('test@example.com', { deep: true });
+    } catch (error) {
+      if (error instanceof SniffmailError && error.statusCode === 401) {
+        console.error('Invalid API key. Get your free API key at https://sniffmail.io');
+        // Alert admin or disable deep verification
+      }
+    }
+    ```
+    
+    **Message:** `Invalid API key. Get your free API key at https://sniffmail.io`
+    
+    **Resolution:**
+    - Verify your API key is correct
+    - Check environment variables are loaded
+    - Get a new API key at [sniffmail.io](https://sniffmail.io)
+  </Tab>
+
+  <Tab title="403 - Usage Limit Exceeded">
+    ```typescript
+    import { validateEmail, SniffmailError } from 'sniffmail';
+
+    try {
+      const result = await validateEmail('test@example.com', { deep: true });
+    } catch (error) {
+      if (error instanceof SniffmailError && error.statusCode === 403) {
+        console.error('Usage limit exceeded. Upgrade at https://sniffmail.io');
+        // Fall back to basic validation
+        const basicResult = await validateEmail('test@example.com');
+      }
+    }
+    ```
+    
+    **Message:** `Usage limit exceeded. Upgrade your plan at https://sniffmail.io`
+    
+    **Resolution:**
+    - Upgrade your plan at [sniffmail.io](https://sniffmail.io)
+    - Fall back to basic validation (no API key needed)
+    - Implement monthly usage tracking
+  </Tab>
+
+  <Tab title="429 - Rate Limited">
+    ```typescript
+    import { validateEmail, SniffmailError } from 'sniffmail';
+
+    async function validateWithRetry(email: string, maxRetries = 3) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          return await validateEmail(email, { deep: true });
+        } catch (error) {
+          if (error instanceof SniffmailError && error.statusCode === 429) {
+            if (i < maxRetries - 1) {
+              // Exponential backoff: 1s, 2s, 4s
+              const delay = Math.pow(2, i) * 1000;
+              console.log(`Rate limited. Retrying in ${delay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+          }
+          throw error;
+        }
+      }
+    }
+    ```
+    
+    **Message:** `Rate limit exceeded. Please slow down your requests.`
+    
+    **Resolution:**
+    - Reduce concurrency in batch operations
+    - Implement exponential backoff
+    - Upgrade to higher rate limit tier
+  </Tab>
+</Tabs>
+
+## Complete Error Handling Example
+
+```typescript
+import {
+  validateEmail,
+  ApiKeyNotConfiguredError,
+  SniffmailError
+} from 'sniffmail';
+
+async function safeValidateEmail(email: string) {
+  try {
+    const result = await validateEmail(email, { deep: true });
+    return result;
+  } catch (error) {
+    // Handle API key not configured
+    if (error instanceof ApiKeyNotConfiguredError) {
+      console.error('⚠️  API key not configured for deep verification');
+      console.error('   Get your free API key at https://sniffmail.io');
+      
+      // Fall back to basic validation
+      console.log('   Falling back to basic validation...');
+      return await validateEmail(email);
+    }
+
+    // Handle Sniffmail API errors
+    if (error instanceof SniffmailError) {
+      switch (error.statusCode) {
+        case 401:
+          console.error('❌ Invalid API key');
+          break;
+        case 403:
+          console.error('⚠️  Usage limit exceeded. Upgrade your plan.');
+          // Fall back to basic validation
+          return await validateEmail(email);
+        case 429:
+          console.error('⚠️  Rate limited. Please slow down.');
+          // Implement retry logic or queue
+          break;
+        default:
+          console.error(`❌ API error (${error.statusCode}): ${error.message}`);
+      }
+      
+      throw error;
+    }
+
+    // Handle unexpected errors
+    console.error('❌ Unexpected error:', error);
+    throw error;
+  }
+}
+```
+
+## Graceful Degradation
+
+Fall back to basic validation when deep verification fails:
+
+```typescript
+import {
+  validateEmail,
+  ApiKeyNotConfiguredError,
+  SniffmailError
+} from 'sniffmail';
+
+async function validateWithFallback(email: string) {
+  try {
+    // Try deep verification
+    return await validateEmail(email, { deep: true });
+  } catch (error) {
+    if (
+      error instanceof ApiKeyNotConfiguredError ||
+      (error instanceof SniffmailError && error.statusCode === 403)
+    ) {
+      // Fall back to basic validation (free, no API key)
+      console.warn('Deep verification unavailable, using basic validation');
+      return await validateEmail(email);
+    }
+    throw error;
+  }
+}
+```
+
+## Retry Logic
+
+Implement exponential backoff for transient errors:
+
+```typescript
+import { validateEmail, SniffmailError } from 'sniffmail';
+
+interface RetryOptions {
+  maxRetries?: number;
+  initialDelay?: number;
+  maxDelay?: number;
+}
+
+async function validateWithRetry(
+  email: string,
+  options: RetryOptions = {}
+): Promise<ValidationResult> {
+  const {
+    maxRetries = 3,
+    initialDelay = 1000,
+    maxDelay = 10000
+  } = options;
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await validateEmail(email, { deep: true });
+    } catch (error) {
+      lastError = error as Error;
+
+      // Only retry on rate limits or network errors
+      if (
+        error instanceof SniffmailError &&
+        (error.statusCode === 429 || error.message.includes('timeout'))
+      ) {
+        if (attempt < maxRetries - 1) {
+          // Exponential backoff with max delay
+          const delay = Math.min(
+            initialDelay * Math.pow(2, attempt),
+            maxDelay
+          );
+          
+          console.log(`Retry ${attempt + 1}/${maxRetries} in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+
+      // Don't retry on permanent errors (401, 403)
+      throw error;
+    }
+  }
+
+  throw lastError;
+}
+```
+
+## Batch Error Handling
+
+Handle errors gracefully when processing multiple emails:
+
+```typescript
+import { validateEmail, SniffmailError } from 'sniffmail';
+import pLimit from 'p-limit';
+
+interface ValidationAttempt {
+  email: string;
+  result?: ValidationResult;
+  error?: SniffmailError;
+}
+
+async function validateBatchWithErrors(
+  emails: string[],
+  concurrency: number = 5
+): Promise<ValidationAttempt[]> {
+  const limit = pLimit(concurrency);
+
+  const attempts = await Promise.all(
+    emails.map((email) =>
+      limit(async (): Promise<ValidationAttempt> => {
+        try {
+          const result = await validateEmail(email, { deep: true });
+          return { email, result };
+        } catch (error) {
+          if (error instanceof SniffmailError) {
+            return { email, error };
+          }
+          throw error;
+        }
+      })
+    )
+  );
+
+  // Log errors
+  const errors = attempts.filter(a => a.error);
+  if (errors.length > 0) {
+    console.error(`${errors.length}/${emails.length} validations failed:`);
+    errors.forEach(({ email, error }) => {
+      console.error(`  ${email}: ${error?.message} (${error?.statusCode})`);
+    });
+  }
+
+  return attempts;
+}
+
+// Usage
+const attempts = await validateBatchWithErrors(emails);
+
+// Process successful validations
+const validResults = attempts
+  .filter(a => a.result)
+  .map(a => a.result!);
+
+// Handle failed validations
+const failed = attempts.filter(a => a.error);
+for (const { email, error } of failed) {
+  if (error?.statusCode === 429) {
+    // Queue for retry
+    await retryQueue.add(email);
+  }
+}
+```
+
+## Rate Limit Monitoring
+
+Track API usage to avoid hitting limits:
+
+```typescript
+import { SniffmailError } from 'sniffmail';
+
+class RateLimitMonitor {
+  private requests = 0;
+  private windowStart = Date.now();
+  private readonly windowMs = 60000; // 1 minute
+  private readonly maxRequests: number;
+
+  constructor(maxRequestsPerMinute: number) {
+    this.maxRequests = maxRequestsPerMinute;
+  }
+
+  async checkLimit(): Promise<void> {
+    const now = Date.now();
+    
+    // Reset window if expired
+    if (now - this.windowStart >= this.windowMs) {
+      this.requests = 0;
+      this.windowStart = now;
+    }
+
+    // Check if limit exceeded
+    if (this.requests >= this.maxRequests) {
+      const waitTime = this.windowMs - (now - this.windowStart);
+      console.log(`Rate limit reached. Waiting ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      this.requests = 0;
+      this.windowStart = Date.now();
+    }
+
+    this.requests++;
+  }
+}
+
+// Usage
+const monitor = new RateLimitMonitor(60); // 60 req/min (Starter tier)
+
+for (const email of emails) {
+  await monitor.checkLimit();
+  const result = await validateEmail(email, { deep: true });
+}
+```
+
+## Error Response Examples
+
+<Tabs>
+  <Tab title="401 Unauthorized">
+    ```json
+    {
+      "error": "Unauthorized",
+      "message": "Invalid API key"
+    }
+    ```
+  </Tab>
+
+  <Tab title="403 Forbidden">
+    ```json
+    {
+      "error": "Forbidden",
+      "message": "Usage limit exceeded",
+      "details": {
+        "limit": 500,
+        "used": 500,
+        "resetDate": "2026-04-01T00:00:00Z"
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="429 Rate Limited">
+    ```json
+    {
+      "error": "Too Many Requests",
+      "message": "Rate limit exceeded",
+      "retryAfter": 60
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+<Warning>
+**Always handle these errors:**
+
+1. **ApiKeyNotConfiguredError** - Fall back to basic validation
+2. **403 (Usage limit)** - Track monthly quota and alert before hitting limit
+3. **429 (Rate limit)** - Implement exponential backoff or reduce concurrency
+4. **Network errors** - Retry with backoff for transient failures
+</Warning>
+
+<Steps>
+  <Step title="Use try-catch blocks">
+    Always wrap validation calls in try-catch to handle errors gracefully.
+  </Step>
+
+  <Step title="Implement fallbacks">
+    Fall back to basic validation when deep verification is unavailable.
+  </Step>
+
+  <Step title="Retry transient errors">
+    Implement exponential backoff for 429 rate limits and network timeouts.
+  </Step>
+
+  <Step title="Monitor usage">
+    Track API usage to avoid hitting monthly limits.
+  </Step>
+
+  <Step title="Log errors properly">
+    Log error details including status codes and response data for debugging.
+  </Step>
+</Steps>
+
+## Testing Error Scenarios
+
+Test your error handling with invalid inputs:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+// Test without API key (should throw ApiKeyNotConfiguredError)
+try {
+  await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  console.log('✓ Caught ApiKeyNotConfiguredError');
+}
+
+// Test with invalid API key (should throw 401)
+configure({ apiKey: 'invalid_key' });
+try {
+  await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError && error.statusCode === 401) {
+    console.log('✓ Caught 401 Unauthorized');
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Basic Validation" icon="check" href="/guides/basic-validation">
+    Learn about free validation without API keys
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Handle errors in bulk operations
+  </Card>
+</CardGroup>

@@ -1,0 +1,621 @@
+---
+title: "Caching"
+description: "Understand Sniffmail's intelligent caching system to optimize performance and reduce API costs"
+---
+
+## Overview
+
+Sniffmail uses a multi-tiered caching system to optimize performance and reduce redundant validation checks. Results are cached with different TTLs (time-to-live) based on their status — emails that rarely change are cached longer.
+
+<Info>
+**Caching is enabled by default** and requires no configuration. Results are stored in memory and automatically expire.
+</Info>
+
+## Why Cache Validation Results?
+
+<AccordionGroup>
+
+<Accordion title="Reduce API Costs" icon="dollar-sign">
+Deep mode uses paid API credits. Caching validation results prevents repeated checks for the same email:
+
+```typescript
+// First call: Uses API credit
+await validateEmail('user@gmail.com', { deep: true });
+
+// Second call: Returns cached result (free)
+await validateEmail('user@gmail.com', { deep: true });
+```
+
+For high-traffic applications, this can reduce costs by **70-90%**.
+</Accordion>
+
+<Accordion title="Improve Performance" icon="gauge-high">
+Cached results return in &lt;1ms vs 1-3 seconds for SMTP verification:
+
+```typescript
+const result = await validateEmail('cached@example.com', { deep: true });
+console.log(result.cached); // true
+console.log('Latency: <1ms');
+```
+</Accordion>
+
+<Accordion title="Reduce Network Calls" icon="network-wired">
+Even in Quick Mode, caching reduces:
+- MX record lookups (DNS queries)
+- DeBounce API calls
+- GitHub blocklist refreshes
+</Accordion>
+
+<Accordion title="Respect Rate Limits" icon="clock">
+Caching helps stay under API rate limits:
+
+```typescript
+// Without cache: 100 emails = 100 API calls (may hit rate limit)
+// With cache (80% hit rate): 100 emails = 20 API calls ✓
+```
+</Accordion>
+
+</AccordionGroup>
+
+## Cache TTL (Time-to-Live)
+
+Sniffmail uses **intelligent TTL** based on result status:
+
+| Status | Default TTL | Reason | Example |
+|--------|-------------|--------|----------|
+| `safe` | **7 days** | Valid emails rarely become invalid | `john@gmail.com` |
+| `invalid` | **30 days** | Invalid emails almost never become valid | `fakeperson@gmail.com` |
+| `risky` | **1 day** | Status may change (catch-all, full inbox) | `user@catch-all-domain.com` |
+| `unknown` | **0 (no cache)** | Could not determine — retry next time | SMTP timeout |
+
+**Source:** `src/config.ts:5-10`
+
+### Why Different TTLs?
+
+<Steps>
+
+<Step title="safe (7 days)">
+Valid email addresses rarely change:
+- Gmail/Outlook accounts stay active for years
+- Business emails remain valid as long as person works there
+- Safe to cache for a week
+
+```typescript
+// Day 1: Verify john@gmail.com → safe
+// Days 2-7: Return cached result
+// Day 8: Re-verify to ensure still valid
+```
+</Step>
+
+<Step title="invalid (30 days)">
+Invalid emails almost never become valid:
+- Deleted mailboxes are rarely restored
+- Typos remain typos
+- Longest cache duration
+
+```typescript
+// Verify fakeperson@gmail.com → invalid
+// Cache for 30 days (won't suddenly become real)
+```
+</Step>
+
+<Step title="risky (1 day)">
+Risky status can change quickly:
+- **Catch-all domains:** Hard to verify, may change configuration
+- **Full mailboxes:** User might delete emails tomorrow
+- **Greylisting:** Temporary SMTP delay
+
+```typescript
+// Today: user@catch-all.com → risky (catch-all)
+// Tomorrow: Re-check in case domain config changed
+```
+</Step>
+
+<Step title="unknown (0 - no cache)">
+Unknown status means we couldn't verify:
+- SMTP timeout
+- Firewall blocked verification
+- Server temporarily down
+
+Never cache — retry next time.
+
+```typescript
+// Call 1: user@timeout-domain.com → unknown (timeout)
+// Call 2: Try again (server might be back up)
+```
+</Step>
+
+</Steps>
+
+## Cache Stores
+
+Sniffmail supports two cache backends:
+
+### In-Memory Cache (Default)
+
+Stores results in application memory using a JavaScript `Map`:
+
+```typescript
+interface CacheEntry {
+  value: string;      // JSON-serialized ValidationResult
+  expires: number;    // Unix timestamp
+}
+
+class MemoryCache {
+  private store = new Map<string, CacheEntry>();
+  
+  async get(key: string): Promise<string | null> {
+    const entry = this.store.get(key);
+    if (!entry || Date.now() > entry.expires) {
+      return null; // Expired or not found
+    }
+    return entry.value;
+  }
+}
+```
+
+**Source:** `src/cache/memory.ts:8-48`
+
+#### Pros
+- **Zero configuration** — works out of the box
+- **Extremely fast** — &lt;1ms lookup
+- **No external dependencies**
+
+#### Cons
+- **Not shared** — each server instance has separate cache
+- **Lost on restart** — cache cleared when app restarts
+- **Memory limited** — grows unbounded (no max size)
+
+<Tip>
+In-memory cache is perfect for:
+- Single-server deployments
+- Serverless functions (cache lasts for container lifetime)
+- Development environments
+</Tip>
+
+### Redis Cache
+
+Stores results in Redis for distributed caching:
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+**Source:** `src/cache/redis.ts`
+
+#### Pros
+- **Shared across servers** — all instances use same cache
+- **Persistent** — survives app restarts
+- **Scalable** — Redis handles millions of keys
+- **Automatic expiration** — Redis handles TTL natively
+
+#### Cons
+- **Requires Redis server**
+- **Slightly slower** — network roundtrip (~1-5ms)
+- **Additional complexity**
+
+<Info>
+Use Redis cache for:
+- Multi-server deployments (Kubernetes, load balancer)
+- High-traffic applications (share cache across instances)
+- Production environments where cache should persist
+</Info>
+
+## Cache Keys
+
+Cache keys use the format:
+
+```
+sniffmail:<normalized-email>
+```
+
+**Normalization:**
+- Convert to lowercase
+- Trim whitespace
+
+```typescript
+getCacheKey('User@GMAIL.com  ');
+// → 'sniffmail:user@gmail.com'
+
+getCacheKey('  John@Example.com');
+// → 'sniffmail:john@example.com'
+```
+
+**Source:** `src/cache/index.ts:25-27`
+
+<Note>
+Normalization ensures that `User@Gmail.com` and `user@gmail.com` share the same cache entry.
+</Note>
+
+## Configuration
+
+### Customize TTL
+
+Override default TTL values:
+
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  cache: {
+    enabled: true,
+    ttl: {
+      safe: 86400,      // 1 day (default: 7 days)
+      invalid: 604800,  // 7 days (default: 30 days)
+      risky: 3600,      // 1 hour (default: 1 day)
+      unknown: 0,       // Never cache (default: 0)
+    },
+  },
+});
+```
+
+<Warning>
+**Shorter TTLs = more API calls = higher costs**
+
+Only reduce TTLs if you have a specific reason (e.g., expecting emails to change frequently).
+</Warning>
+
+### Disable Caching
+
+Not recommended, but possible:
+
+```typescript
+configure({
+  cache: {
+    enabled: false,
+  },
+});
+```
+
+<Warning>
+Disabling cache will:
+- **Increase API costs** (no reuse of results)
+- **Increase latency** (every call hits SMTP)
+- **Risk rate limiting** (more API calls)
+</Warning>
+
+### Per-Request Cache Bypass
+
+Force fresh validation for a specific email:
+
+```typescript
+// Option 1: Delete from cache first
+import { deleteFromCache } from 'sniffmail';
+await deleteFromCache('user@example.com');
+const result = await validateEmail('user@example.com', { deep: true });
+
+// Option 2: Check if cached, skip if needed
+const result = await validateEmail('user@example.com', { deep: true });
+if (result.cached) {
+  // Optionally re-validate
+}
+```
+
+## Cache Flow
+
+Here's how caching works in deep mode:
+
+```
+┌─────────────────────┐
+│  validateEmail()    │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Syntax + Quick     │
+│  Mode Checks        │
+└──────────┬──────────┘
+           │
+           ▼
+     ┌─────────┐
+     │ Valid?  │
+     └────┬────┘
+          │ Yes
+          ▼
+┌─────────────────────┐
+│  Check Cache        │
+│  getCacheStore()    │
+└──────────┬──────────┘
+           │
+     ┌─────┴─────┐
+     │   Found?  │
+     └─────┬─────┘
+      Yes  │  No
+       │   │
+       │   ▼
+       │ ┌─────────────────────┐
+       │ │  Call API           │
+       │ │  checkMailbox()     │
+       │ └──────────┬──────────┘
+       │            │
+       │            ▼
+       │ ┌─────────────────────┐
+       │ │  Store in Cache     │
+       │ │  setInCache()       │
+       │ │  TTL = f(status)    │
+       │ └──────────┬──────────┘
+       │            │
+       └────────┬───┘
+                │
+                ▼
+┌─────────────────────────┐
+│  Return Result          │
+│  { ..., cached: true }  │
+└─────────────────────────┘
+```
+
+**Source:** `src/validator.ts:165-186`
+
+### Step-by-Step
+
+<Steps>
+
+<Step title="Quick Mode Checks">
+Run syntax, disposable, MX, and DeBounce checks.
+
+If email fails here, **skip cache** (no need to cache quick checks).
+</Step>
+
+<Step title="Cache Lookup">
+Check if email was validated recently:
+
+```typescript
+const cached = await getFromCache(normalizedEmail);
+if (cached) {
+  return { ...JSON.parse(cached), cached: true };
+}
+```
+
+Cache hit → return immediately.
+</Step>
+
+<Step title="API Call">
+If not cached, call Sniffmail API for SMTP verification:
+
+```typescript
+const apiResponse = await checkMailbox(normalizedEmail);
+```
+</Step>
+
+<Step title="Store in Cache">
+Cache result with TTL based on status:
+
+```typescript
+const ttl = getCacheTtl(apiResponse.is_reachable);
+if (ttl > 0) {
+  await setInCache(normalizedEmail, JSON.stringify(result), ttl);
+}
+```
+
+- `safe` → 7 days
+- `invalid` → 30 days
+- `risky` → 1 day
+- `unknown` → skip (ttl = 0)
+</Step>
+
+<Step title="Return Result">
+Return validation result with `cached: false`.
+</Step>
+
+</Steps>
+
+## Multi-Level Caching
+
+Sniffmail uses caching at multiple levels:
+
+### 1. Result Cache (Main)
+
+Caches full validation results in your configured store (memory or Redis).
+
+- **Scope:** Deep mode only
+- **TTL:** 7-30 days
+- **Key:** `sniffmail:<email>`
+
+### 2. MX Lookup Cache
+
+The `node-email-verifier` library caches MX records:
+
+```typescript
+await emailValidator(email, {
+  cache: {
+    enabled: true,
+    defaultTtl: 3600000,  // 1 hour
+    maxSize: 1000,
+  },
+});
+```
+
+**Source:** `src/validator.ts:108-112`
+
+- **Scope:** All validations
+- **TTL:** 1 hour
+- **Store:** In-memory (per process)
+
+### 3. DeBounce Cache
+
+Caches DeBounce API responses:
+
+```typescript
+const debounceCache = new Map<
+  string,
+  { disposable: boolean; expiresAt: number }
+>();
+const DEBOUNCE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+```
+
+**Source:** `src/sources/debounce-api.ts:11-12`
+
+- **Scope:** All validations with `useDeBounce: true`
+- **TTL:** 24 hours
+- **Store:** In-memory (per process)
+
+### 4. GitHub Blocklist Cache
+
+The GitHub disposable blocklist is cached in memory:
+
+```typescript
+const BLOCKLIST_REFRESH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+```
+
+**Source:** `src/sources/github-blocklist.ts:14`
+
+- **Scope:** All validations
+- **Refresh:** Every 24 hours
+- **Store:** In-memory (per process)
+
+<Info>
+All these caches work together to minimize network calls and maximize performance.
+</Info>
+
+## Cache Monitoring
+
+Check cache hit rate:
+
+```typescript
+const results = await validateEmails(emails, { deep: true });
+
+const cached = results.results.filter(r => r.cached).length;
+const total = results.results.length;
+const hitRate = (cached / total) * 100;
+
+console.log(`Cache hit rate: ${hitRate.toFixed(1)}%`);
+// Cache hit rate: 87.3%
+```
+
+<Tip>
+**Good cache hit rates:**
+- **70-90%** — Excellent (saving lots of API calls)
+- **40-70%** — Good (normal for first-time users)
+- **&lt;40%** — Low (mostly unique emails)
+
+Hit rate depends on:
+- How often same emails are validated
+- TTL configuration
+- Cache store (Redis = shared across servers)
+</Tip>
+
+## Redis Cache Setup
+
+### Installation
+
+```bash
+npm install ioredis
+```
+
+### Basic Configuration
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  host: 'localhost',
+  port: 6379,
+  password: process.env.REDIS_PASSWORD,
+});
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+### Redis Cluster
+
+```typescript
+import { Cluster } from 'ioredis';
+
+const redis = new Cluster([
+  { host: 'redis-1', port: 6379 },
+  { host: 'redis-2', port: 6379 },
+  { host: 'redis-3', port: 6379 },
+]);
+
+configure({
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+### Redis with URL
+
+```typescript
+const redis = new Redis(process.env.REDIS_URL);
+// e.g., redis://user:pass@host:6379/0
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+
+<Card title="Use Redis in Production" icon="server">
+Share cache across server instances to maximize hit rate and reduce costs.
+</Card>
+
+<Card title="Monitor Cache Hit Rate" icon="chart-line">
+Track `cached: true` in results. Aim for >70% hit rate.
+</Card>
+
+<Card title="Don't Reduce TTLs Unnecessarily" icon="clock">
+Default TTLs are optimized. Shorter TTLs = more API calls = higher costs.
+</Card>
+
+<Card title="Clear Cache for Suspicious Emails" icon="trash">
+If user reports validation error, manually clear their email from cache and retry.
+</Card>
+
+</CardGroup>
+
+## Cache Invalidation
+
+### Manual Deletion
+
+```typescript
+import { deleteFromCache, validateEmail } from 'sniffmail';
+
+// User reports they fixed their email
+await deleteFromCache('user@example.com');
+
+// Re-validate with fresh check
+const result = await validateEmail('user@example.com', { deep: true });
+```
+
+### Clear All Cache
+
+**In-memory:**
+```typescript
+import { MemoryCache } from 'sniffmail';
+
+const cache = new MemoryCache();
+cache.clear(); // Delete all entries
+```
+
+**Redis:**
+```bash
+# Clear all Sniffmail cache keys
+redis-cli --scan --pattern 'sniffmail:*' | xargs redis-cli DEL
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="How It Works" icon="gears" href="/concepts/how-it-works">
+    Understand the validation pipeline
+  </Card>
+  <Card title="Validation Modes" icon="sliders" href="/concepts/validation-modes">
+    Choose between quick and deep mode
+  </Card>
+</CardGroup>

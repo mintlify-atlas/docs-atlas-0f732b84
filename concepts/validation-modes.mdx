@@ -1,0 +1,464 @@
+---
+title: "Validation Modes"
+description: "Choose between quick mode (free, syntax + disposable) and deep mode (SMTP verification)"
+---
+
+## Overview
+
+Sniffmail offers two validation modes that balance speed, cost, and accuracy:
+
+| Mode | What It Checks | API Key Required | Cost | Speed | Use Case |
+|------|----------------|------------------|------|-------|----------|
+| **Quick Mode** | Syntax, disposable, MX | No | Free | &lt;100ms | Signup forms, contact forms |
+| **Deep Mode** | Quick + SMTP verification | Yes | Paid | 1-3s | Payment flows, critical emails |
+
+## Quick Mode (Default)
+
+**Free, no API key needed, unlimited usage.**
+
+Quick mode performs 4 validation checks:
+
+<Steps>
+
+<Step title="Syntax Validation">
+Verifies email format is valid:
+```typescript
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+```
+</Step>
+
+<Step title="Disposable Detection">
+Checks against three blocklists:
+- **GitHub blocklist** (26,000+ domains)
+- **Scraped domains** (from temp mail sites)
+- **Discovered domains** (found at runtime)
+</Step>
+
+<Step title="MX Record Lookup">
+Verifies the domain has mail servers.
+</Step>
+
+<Step title="DeBounce API Check">
+Real-time disposable detection via free API.
+</Step>
+
+</Steps>
+
+### Usage
+
+Quick mode is the default — no configuration needed:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+const result = await validateEmail('user@example.com');
+
+if (!result.valid) {
+  console.log(`Rejected: ${result.reason}`);
+  // Possible reasons:
+  // - 'invalid_syntax'
+  // - 'disposable'
+  // - 'no_mx_records'
+}
+```
+
+### What Quick Mode Catches
+
+<AccordionGroup>
+
+<Accordion title="Invalid Syntax" icon="xmark">
+```typescript
+await validateEmail('notanemail');
+// { valid: false, reason: 'invalid_syntax' }
+
+await validateEmail('missing@domain');
+// { valid: false, reason: 'invalid_syntax' }
+
+await validateEmail('spaces @email.com');
+// { valid: false, reason: 'invalid_syntax' }
+```
+</Accordion>
+
+<Accordion title="Disposable/Burner Emails" icon="trash">
+```typescript
+await validateEmail('user@tempmail.com');
+// { valid: false, reason: 'disposable', disposable: true }
+
+await validateEmail('test@guerrillamail.org');
+// { valid: false, reason: 'disposable', disposable: true }
+
+await validateEmail('throw@awaymailbox.net');
+// { valid: false, reason: 'disposable', disposable: true }
+```
+
+Blocks 26,000+ disposable domains including:
+- tempmail.com, guerrillamail.com, mailinator.com
+- 10minutemail.com, throwaway.email
+- All major temporary email services
+</Accordion>
+
+<Accordion title="Non-Existent Domains" icon="globe">
+```typescript
+await validateEmail('user@fakejklfsdjdomain.com');
+// { valid: false, reason: 'no_mx_records', mx: false }
+
+await validateEmail('admin@thisisnotarealdomain123.net');
+// { valid: false, reason: 'no_mx_records', mx: false }
+```
+</Accordion>
+
+</AccordionGroup>
+
+### What Quick Mode Doesn't Catch
+
+<Warning>
+Quick mode **cannot detect**:
+- Fake email addresses on real domains (`fakeperson123@gmail.com`)
+- Typos in usernames (`johnn@gmail.com` when you meant `john@gmail.com`)
+- Disabled or full mailboxes
+- Catch-all domains (accept all addresses)
+
+For these cases, use **Deep Mode**.
+</Warning>
+
+### Performance
+
+- **Latency:** 50-100ms typical, 200ms worst-case
+- **Throughput:** Unlimited (no rate limits)
+- **Caching:** DNS results cached for 1 hour
+
+```typescript
+// Example: Validate 1000 emails
+const { results, summary } = await validateEmails(emails, {
+  concurrency: 10, // 10 parallel requests
+});
+// Completes in ~5-10 seconds
+```
+
+## Deep Mode (SMTP Verification)
+
+**Requires API key. Verifies mailbox actually exists.**
+
+Deep mode performs all Quick Mode checks **plus** SMTP verification:
+
+<Steps>
+
+<Step title="All Quick Mode Checks">
+Syntax, disposable detection, MX lookup, DeBounce API.
+</Step>
+
+<Step title="Cache Lookup">
+Checks if email was validated recently (avoids redundant API calls).
+</Step>
+
+<Step title="SMTP Connection">
+Connects to the mail server to verify mailbox existence:
+```typescript
+// Powered by Sniffmail API
+const apiResponse = await checkMailbox(email);
+```
+</Step>
+
+</Steps>
+
+### Setup
+
+<Steps>
+
+<Step title="Get API Key">
+1. Sign up at [sniffmail.io](https://sniffmail.io)
+2. Choose a plan (free tier: 500 verifications/month)
+3. Copy your API key (starts with `sniff_`)
+</Step>
+
+<Step title="Configure SDK">
+```typescript
+import { configure } from 'sniffmail';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+});
+```
+
+Or set environment variable:
+```bash
+export SNIFFMAIL_API_KEY=sniff_xxxxx
+```
+</Step>
+
+<Step title="Enable Deep Mode">
+```typescript
+const result = await validateEmail('user@gmail.com', { 
+  deep: true 
+});
+
+if (result.smtp?.is_reachable === 'invalid') {
+  console.log('Mailbox does not exist!');
+}
+```
+</Step>
+
+</Steps>
+
+### What Deep Mode Catches
+
+Deep mode detects everything Quick Mode does, plus:
+
+<AccordionGroup>
+
+<Accordion title="Fake Mailboxes" icon="user-slash">
+```typescript
+await validateEmail('fakeperson12345@gmail.com', { deep: true });
+// {
+//   valid: false,
+//   reason: 'mailbox_not_found',
+//   smtp: { is_reachable: 'invalid', is_deliverable: false }
+// }
+```
+
+This is the **#1 reason** to use deep mode — catch fake addresses on real domains.
+</Accordion>
+
+<Accordion title="Full Mailboxes" icon="inbox-full">
+```typescript
+await validateEmail('overfullmailbox@company.com', { deep: true });
+// {
+//   valid: false,
+//   reason: 'mailbox_full',
+//   smtp: { is_reachable: 'invalid', is_deliverable: false }
+// }
+```
+</Accordion>
+
+<Accordion title="Disabled Mailboxes" icon="ban">
+```typescript
+await validateEmail('oldemployee@company.com', { deep: true });
+// {
+//   valid: false,
+//   reason: 'mailbox_disabled',
+//   smtp: { is_reachable: 'invalid', is_deliverable: false }
+// }
+```
+</Accordion>
+
+<Accordion title="Catch-All Domains" icon="asterisk">
+```typescript
+await validateEmail('anythinggoeshere@catch-all-domain.com', { deep: true });
+// {
+//   valid: false,
+//   reason: 'catch_all',
+//   smtp: { is_reachable: 'risky', is_catch_all: true }
+// }
+```
+
+<Note>
+Catch-all domains accept **all** email addresses, making it impossible to verify if a specific mailbox exists. These are marked as `risky`.
+</Note>
+</Accordion>
+
+</AccordionGroup>
+
+### SMTP Result Details
+
+Deep mode returns detailed SMTP information:
+
+```typescript
+interface SmtpResult {
+  is_reachable: 'safe' | 'risky' | 'invalid' | 'unknown';
+  can_connect: boolean;      // Successfully connected to SMTP server
+  is_deliverable: boolean;   // Mailbox accepts mail
+  is_catch_all: boolean;     // Domain is catch-all (accepts all addresses)
+}
+```
+
+**Example response:**
+
+```typescript
+const result = await validateEmail('john@gmail.com', { deep: true });
+
+console.log(result);
+// {
+//   email: 'john@gmail.com',
+//   valid: true,
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: {
+//     is_reachable: 'safe',
+//     can_connect: true,
+//     is_deliverable: true,
+//     is_catch_all: false,
+//   },
+//   cached: false,
+// }
+```
+
+### Performance
+
+- **Latency:** 1-3 seconds per email
+- **Rate Limits:** Depends on plan (10-200 req/min)
+- **Caching:** Results cached for 7-30 days (see [Caching](/concepts/caching))
+
+<Tip>
+Use batch validation with concurrency control for large lists:
+
+```typescript
+const { results } = await validateEmails(emails, {
+  deep: true,
+  concurrency: 5, // Don't exceed rate limit
+});
+```
+</Tip>
+
+## Pricing
+
+<Note>
+Sniffmail is **up to 85% cheaper** than ZeroBounce, NeverBounce, and Hunter.
+</Note>
+
+### Monthly Plans
+
+| Tier | Verifications/Month | Rate Limit | Price | Cost per Email |
+|------|---------------------|------------|-------|----------------|
+| **Free** | 500 | 10 req/min | $0 | $0 |
+| **Starter** | 25,000 | 60 req/min | $29/mo | $0.00116 |
+| **Pro** | 100,000 | 200 req/min | $79/mo | $0.00079 |
+| **Scale** | 200,000 | 200 req/min | $149/mo | $0.00075 |
+
+### Credit Packs (Pay-As-You-Go)
+
+For occasional usage:
+
+| Pack Size | Price | Cost per Email |
+|-----------|-------|----------------|
+| 1,000 | $2 | $0.002 |
+| 10,000 | $15 | $0.0015 |
+| 50,000 | $60 | $0.0012 |
+| 100,000 | $100 | $0.001 |
+
+<Info>
+**Credit packs never expire** and can be used alongside monthly plans.
+</Info>
+
+### Get Your API Key
+
+Sign up at [sniffmail.io](https://sniffmail.io) to get started with 500 free verifications.
+
+## Choosing the Right Mode
+
+### Use Quick Mode When:
+
+<Check>**Signup forms** — Block disposable emails instantly</Check>
+<Check>**Contact forms** — Prevent spam from temp mail services</Check>
+<Check>**Newsletter signups** — Fast validation, no API key needed</Check>
+<Check>**High volume** — Unlimited free usage</Check>
+<Check>**Low-stakes validation** — Bounces won't cause major issues</Check>
+
+### Use Deep Mode When:
+
+<Check>**Payment flows** — Verify invoice/receipt emails before charging</Check>
+<Check>**Critical notifications** — Ensure password resets reach users</Check>
+<Check>**B2B signups** — Verify business emails are real</Check>
+<Check>**Email list cleaning** — Remove invalid addresses before campaigns</Check>
+<Check>**Two-factor auth** — Confirm email-based 2FA will work</Check>
+
+## Example: Hybrid Approach
+
+Use Quick Mode by default, Deep Mode for critical actions:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+// Signup: Quick mode
+async function handleSignup(email: string) {
+  const result = await validateEmail(email);
+  
+  if (!result.valid) {
+    throw new Error(`Invalid email: ${result.reason}`);
+  }
+  
+  // Allow signup
+  return createUser(email);
+}
+
+// First purchase: Deep mode
+async function handleFirstPurchase(email: string) {
+  const result = await validateEmail(email, { deep: true });
+  
+  if (result.smtp?.is_reachable !== 'safe') {
+    throw new Error('Please provide a valid email for your receipt');
+  }
+  
+  return processPayment(email);
+}
+```
+
+## Error Handling
+
+### Missing API Key
+
+```typescript
+import { ApiKeyNotConfiguredError } from 'sniffmail';
+
+try {
+  await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof ApiKeyNotConfiguredError) {
+    console.error('Deep mode requires an API key from https://sniffmail.io');
+  }
+}
+```
+
+### Rate Limit Exceeded
+
+```typescript
+import { SniffmailError } from 'sniffmail';
+
+try {
+  await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError && error.statusCode === 429) {
+    console.error('Rate limited. Slow down requests.');
+  }
+}
+```
+
+### Usage Limit Exceeded
+
+```typescript
+try {
+  await validateEmail('test@example.com', { deep: true });
+} catch (error) {
+  if (error instanceof SniffmailError && error.statusCode === 403) {
+    console.error('Monthly quota exceeded. Upgrade at https://sniffmail.io');
+  }
+}
+```
+
+## Configuration Options
+
+Customize validation behavior:
+
+```typescript
+const result = await validateEmail('user@example.com', {
+  deep: false,        // Enable SMTP verification (default: false)
+  checkMx: true,      // Check MX records (default: true)
+  useDeBounce: true,  // Use DeBounce API (default: true)
+  timeout: 5,         // DNS timeout in seconds (default: 5)
+});
+```
+
+<Warning>
+**Don't disable `checkMx` or `useDeBounce` unless you have a specific reason.** This reduces accuracy.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="How It Works" icon="gears" href="/concepts/how-it-works">
+    Deep dive into the validation pipeline
+  </Card>
+  <Card title="Caching" icon="database" href="/concepts/caching">
+    Optimize performance with smart caching
+  </Card>
+</CardGroup>

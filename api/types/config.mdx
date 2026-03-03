@@ -1,0 +1,406 @@
+---
+title: "Configuration Types"
+description: "SDK configuration interfaces for caching and API settings"
+---
+
+## SniffmailConfig Interface
+
+Main configuration object for the Sniffmail SDK.
+
+```typescript
+export interface SniffmailConfig {
+  /** Your Sniffmail API key */
+  apiKey?: string;
+  cache?: {
+    enabled?: boolean;
+    store?: CacheStore;
+    ttl?: CacheTtlConfig;
+  };
+}
+```
+
+## Fields
+
+<ResponseField name="apiKey" type="string">
+  Your Sniffmail API key for deep SMTP verification.
+  
+  - Required for `deep: true` validation mode
+  - Can also be set via `SNIFFMAIL_API_KEY` environment variable
+  - Get your key at [sniffmail.io](https://sniffmail.io)
+</ResponseField>
+
+<ResponseField name="cache" type="object">
+  Cache configuration to store deep validation results.
+  
+  <Expandable title="Cache properties">
+    <ResponseField name="enabled" type="boolean" default={true}>
+      Whether caching is enabled. Set to `false` to disable all caching.
+    </ResponseField>
+    
+    <ResponseField name="store" type="CacheStore">
+      Custom cache implementation. See [CacheStore](#cachestore-interface) below.
+      
+      If not provided, uses in-memory caching with the `memory-cache` package.
+    </ResponseField>
+    
+    <ResponseField name="ttl" type="CacheTtlConfig">
+      Custom TTL (time-to-live) values in seconds for different result types.
+      
+      See [CacheTtlConfig](#cachettlconfig-interface) below.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Examples
+
+### Basic Configuration
+
+```typescript
+import { configure } from '@sniffmail/sdk';
+
+configure({
+  apiKey: 'your-api-key-here'
+});
+```
+
+### Environment Variable
+
+```bash
+# .env
+SNIFFMAIL_API_KEY=your-api-key-here
+```
+
+```typescript
+// No configuration needed - SDK reads from environment
+import { validateEmail } from '@sniffmail/sdk';
+
+const result = await validateEmail('user@example.com', { deep: true });
+```
+
+### Disable Cache
+
+```typescript
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    enabled: false
+  }
+});
+```
+
+### Custom Cache TTL
+
+```typescript
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    enabled: true,
+    ttl: {
+      safe: 86400,      // 1 day for valid emails
+      invalid: 604800,  // 7 days for invalid emails
+      risky: 3600,      // 1 hour for risky emails
+      unknown: 0        // don't cache unknown results
+    }
+  }
+});
+```
+
+---
+
+## CacheStore Interface
+
+Interface for implementing custom cache backends.
+
+```typescript
+export interface CacheStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  delete?(key: string): Promise<void>;
+}
+```
+
+## Methods
+
+<ResponseField name="get" type="(key: string) => Promise<string | null>" required>
+  Retrieve a cached value by key.
+  
+  - Returns the cached value as a string
+  - Returns `null` if key doesn't exist or expired
+</ResponseField>
+
+<ResponseField name="set" type="(key: string, value: string, ttlSeconds: number) => Promise<void>" required>
+  Store a value in the cache with expiration.
+  
+  - `key`: Cache key (email address)
+  - `value`: JSON string of `ValidationResult`
+  - `ttlSeconds`: Time-to-live in seconds
+</ResponseField>
+
+<ResponseField name="delete" type="(key: string) => Promise<void>">
+  Optional method to manually delete a cache entry.
+  
+  Not currently used by the SDK but provided for cache management.
+</ResponseField>
+
+## Implementation Examples
+
+### Redis Cache
+
+```typescript
+import { configure } from '@sniffmail/sdk';
+import Redis from 'ioredis';
+
+const redis = new Redis();
+
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    enabled: true,
+    store: {
+      async get(key: string) {
+        return await redis.get(key);
+      },
+      async set(key: string, value: string, ttlSeconds: number) {
+        await redis.setex(key, ttlSeconds, value);
+      },
+      async delete(key: string) {
+        await redis.del(key);
+      }
+    }
+  }
+});
+```
+
+### Upstash Redis Cache
+
+```typescript
+import { Redis } from '@upstash/redis';
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_URL!,
+  token: process.env.UPSTASH_REDIS_TOKEN!
+});
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: {
+      async get(key: string) {
+        return await redis.get<string>(key);
+      },
+      async set(key: string, value: string, ttlSeconds: number) {
+        await redis.setex(key, ttlSeconds, value);
+      },
+      async delete(key: string) {
+        await redis.del(key);
+      }
+    }
+  }
+});
+```
+
+### DynamoDB Cache
+
+```typescript
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
+
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    enabled: true,
+    store: {
+      async get(key: string) {
+        const result = await docClient.send(new GetCommand({
+          TableName: 'email-validation-cache',
+          Key: { email: key }
+        }));
+        
+        if (!result.Item) return null;
+        
+        // Check if expired
+        if (result.Item.expiresAt < Date.now() / 1000) {
+          return null;
+        }
+        
+        return result.Item.value;
+      },
+      
+      async set(key: string, value: string, ttlSeconds: number) {
+        await docClient.send(new PutCommand({
+          TableName: 'email-validation-cache',
+          Item: {
+            email: key,
+            value,
+            expiresAt: Math.floor(Date.now() / 1000) + ttlSeconds
+          }
+        }));
+      },
+      
+      async delete(key: string) {
+        await docClient.send(new DeleteCommand({
+          TableName: 'email-validation-cache',
+          Key: { email: key }
+        }));
+      }
+    }
+  }
+});
+```
+
+### Vercel KV Cache
+
+```typescript
+import { kv } from '@vercel/kv';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: {
+      async get(key: string) {
+        return await kv.get<string>(key);
+      },
+      async set(key: string, value: string, ttlSeconds: number) {
+        await kv.setex(key, ttlSeconds, value);
+      },
+      async delete(key: string) {
+        await kv.del(key);
+      }
+    }
+  }
+});
+```
+
+---
+
+## CacheTtlConfig Interface
+
+Custom TTL (time-to-live) values for different validation result types.
+
+```typescript
+export interface CacheTtlConfig {
+  safe?: number;
+  invalid?: number;
+  risky?: number;
+  unknown?: number;
+}
+```
+
+## Fields
+
+All values are in seconds.
+
+<ResponseField name="safe" type="number" default={604800}>
+  TTL for valid/deliverable emails.
+  
+  **Default**: 604800 (7 days)
+  
+  Valid emails are unlikely to change, so longer cache is safe.
+</ResponseField>
+
+<ResponseField name="invalid" type="number" default={2592000}>
+  TTL for invalid/undeliverable emails.
+  
+  **Default**: 2592000 (30 days)
+  
+  Invalid emails rarely become valid, so very long cache is appropriate.
+</ResponseField>
+
+<ResponseField name="risky" type="number" default={86400}>
+  TTL for risky emails (catch-all domains, ambiguous results).
+  
+  **Default**: 86400 (1 day)
+  
+  Risky status may change, so shorter cache is recommended.
+</ResponseField>
+
+<ResponseField name="unknown" type="number" default={0}>
+  TTL for unknown results (SMTP errors, timeouts).
+  
+  **Default**: 0 (no cache)
+  
+  Unknown results should be retried, so caching is disabled by default.
+</ResponseField>
+
+## TTL Examples
+
+### Aggressive Caching
+
+```typescript
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    ttl: {
+      safe: 2592000,    // 30 days
+      invalid: 7776000, // 90 days
+      risky: 604800,    // 7 days
+      unknown: 3600     // 1 hour (retry unknown)
+    }
+  }
+});
+```
+
+### Conservative Caching
+
+```typescript
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    ttl: {
+      safe: 86400,   // 1 day
+      invalid: 86400, // 1 day
+      risky: 3600,    // 1 hour
+      unknown: 0      // no cache
+    }
+  }
+});
+```
+
+### No Caching for Valid Emails
+
+```typescript
+// Useful for testing or high-churn email lists
+configure({
+  apiKey: 'your-api-key-here',
+  cache: {
+    ttl: {
+      safe: 0,        // always re-check valid emails
+      invalid: 604800, // 7 days for invalid
+      risky: 86400,    // 1 day for risky
+      unknown: 0       // no cache for unknown
+    }
+  }
+});
+```
+
+## Default Values
+
+If not specified, these defaults are used:
+
+```typescript
+const DEFAULT_TTL = {
+  safe: 604800,    // 7 days
+  invalid: 2592000, // 30 days
+  risky: 86400,     // 1 day
+  unknown: 0        // don't cache
+};
+```
+
+## Caching Behavior
+
+- Cache only applies to **deep mode** (`deep: true`) validations
+- Quick mode results are never cached
+- Cache key is the normalized email address (lowercased and trimmed)
+- Cache value is the entire `ValidationResult` object serialized as JSON
+- TTL is selected based on the `is_reachable` status from SMTP results
+- Setting TTL to `0` disables caching for that status type
+
+## Related Types
+
+- [ValidationResult](/api/types/validation-result) - Cached validation result format
+- [SmtpResult](/api/types/smtp-result) - Determines which TTL to use

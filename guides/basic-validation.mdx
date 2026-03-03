@@ -1,0 +1,284 @@
+---
+title: 'Basic Email Validation'
+description: 'Learn how to perform syntax, disposable, and MX record validation without an API key'
+icon: 'check'
+---
+
+Basic validation provides **free, instant email verification** without requiring an API key. It checks email syntax, detects disposable/burner domains, and verifies MX records.
+
+## What Basic Validation Checks
+
+Basic validation performs three core checks:
+
+1. **Syntax Validation** - Validates email format using RFC standards
+2. **Disposable Domain Detection** - Blocks burner/temporary email addresses from 26,000+ known domains
+3. **MX Record Lookup** - Verifies the domain has valid mail servers
+
+<Note>
+Basic validation is **completely free** and requires no API key. It's perfect for signup forms, newsletters, and general email validation.
+</Note>
+
+## Quick Start
+
+<Steps>
+  <Step title="Install Sniffmail">
+    ```bash
+    npm install sniffmail
+    ```
+  </Step>
+
+  <Step title="Import and validate">
+    ```typescript
+    import { validateEmail } from 'sniffmail';
+
+    const result = await validateEmail('someone@gmail.com');
+
+    if (!result.valid) {
+      console.log(`Invalid: ${result.reason}`);
+      // Possible reasons: 'invalid_syntax', 'disposable', 'no_mx_records'
+    }
+    ```
+  </Step>
+</Steps>
+
+## Understanding the Response
+
+The `ValidationResult` object contains detailed information:
+
+```typescript
+{
+  email: 'someone@gmail.com',      // Normalized email (lowercase, trimmed)
+  valid: true,                      // Overall validity
+  reason: null,                     // Why it's invalid (null if valid)
+  disposable: false,                // Is it a disposable/burner email
+  mx: true,                         // Has valid MX records
+  smtp: null,                       // Only populated with deep: true
+  cached: false                     // Was result from cache
+}
+```
+
+### Validation Reasons
+
+When `valid: false`, the `reason` field explains why:
+
+| Reason | Description |
+|--------|-------------|
+| `invalid_syntax` | Email format is invalid |
+| `disposable` | Domain is a known disposable email provider |
+| `no_mx_records` | Domain has no mail servers |
+
+## Common Use Cases
+
+### Signup Form Validation
+
+Provide user-friendly error messages based on validation results:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+async function validateSignupEmail(email: string): Promise<string | null> {
+  const result = await validateEmail(email);
+
+  if (!result.valid) {
+    switch (result.reason) {
+      case 'invalid_syntax':
+        return 'Please enter a valid email address';
+      case 'disposable':
+        return 'Disposable email addresses are not allowed';
+      case 'no_mx_records':
+        return 'This email domain does not exist';
+      default:
+        return 'Please enter a valid email address';
+    }
+  }
+
+  return null; // Valid
+}
+
+// Usage in your form
+const error = await validateSignupEmail('user@temp-mail.org');
+if (error) {
+  showError(error); // "Disposable email addresses are not allowed"
+}
+```
+
+### Newsletter Subscription
+
+Validate emails before adding them to your mailing list:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+async function subscribeToNewsletter(email: string) {
+  const result = await validateEmail(email);
+
+  if (!result.valid) {
+    throw new Error(`Cannot subscribe: ${result.reason}`);
+  }
+
+  if (result.disposable) {
+    throw new Error('Disposable emails are not allowed for newsletters');
+  }
+
+  // Add to mailing list
+  await mailingList.subscribe(result.email);
+}
+```
+
+### Quick Domain Check
+
+Check if a domain is disposable without making network calls:
+
+```typescript
+import { isDisposableDomain } from 'sniffmail';
+
+// Instant, synchronous check (no API calls)
+if (isDisposableDomain('tempmail.com')) {
+  console.log('Blocked!');
+}
+
+if (isDisposableDomain('gmail.com')) {
+  console.log('Allowed!');
+}
+```
+
+<Note>
+`isDisposableDomain()` is a synchronous function that checks against a local blocklist. It requires no network calls and no API key.
+</Note>
+
+## Validation Options
+
+Customize validation behavior with options:
+
+```typescript
+const result = await validateEmail('user@example.com', {
+  checkMx: true,       // Check MX records (default: true)
+  useDeBounce: true,   // Use DeBounce API (default: true)
+  timeout: 5,          // DNS timeout in seconds (default: 5)
+});
+```
+
+<Tabs>
+  <Tab title="With MX Check">
+    ```typescript
+    // Verify domain has mail servers (recommended)
+    const result = await validateEmail('user@example.com', {
+      checkMx: true
+    });
+    
+    if (!result.mx) {
+      console.log('Domain has no mail servers');
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Syntax Only">
+    ```typescript
+    // Skip MX check for faster validation
+    const result = await validateEmail('user@example.com', {
+      checkMx: false
+    });
+    
+    // Only checks syntax and disposable domains
+    ```
+  </Tab>
+  
+  <Tab title="Custom Timeout">
+    ```typescript
+    // Adjust DNS lookup timeout
+    const result = await validateEmail('user@example.com', {
+      timeout: 10  // Wait up to 10 seconds
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Expected Output Examples
+
+### Valid Email
+
+```typescript
+const result = await validateEmail('john@gmail.com');
+
+console.log(result);
+// {
+//   email: 'john@gmail.com',
+//   valid: true,
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+### Invalid Syntax
+
+```typescript
+const result = await validateEmail('not-an-email');
+
+console.log(result);
+// {
+//   email: 'not-an-email',
+//   valid: false,
+//   reason: 'invalid_syntax',
+//   disposable: false,
+//   mx: false,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+### Disposable Email
+
+```typescript
+const result = await validateEmail('user@tempmail.com');
+
+console.log(result);
+// {
+//   email: 'user@tempmail.com',
+//   valid: false,
+//   reason: 'disposable',
+//   disposable: true,
+//   mx: false,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+### No MX Records
+
+```typescript
+const result = await validateEmail('user@nonexistentdomain123.com');
+
+console.log(result);
+// {
+//   email: 'user@nonexistentdomain123.com',
+//   valid: false,
+//   reason: 'no_mx_records',
+//   disposable: false,
+//   mx: false,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+## Performance Tips
+
+<Warning>
+MX record lookups require DNS queries, which can take 1-3 seconds. For high-traffic applications, consider:
+- Using `checkMx: false` for initial validation
+- Performing MX checks asynchronously in the background
+- Caching results (built-in for deep mode)
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deep Verification" icon="magnifying-glass" href="/guides/deep-verification">
+    Verify mailbox existence with SMTP checks
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Validate multiple emails efficiently
+  </Card>
+</CardGroup>

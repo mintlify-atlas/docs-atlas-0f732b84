@@ -1,0 +1,287 @@
+---
+title: 'Redis Cache'
+description: 'Configure Redis caching for distributed environments and production deployments'
+---
+
+## Overview
+
+The `RedisCache` class provides a production-ready caching solution for distributed environments. It implements the `CacheStore` interface and works with any Redis-compatible client that supports `get`, `setex`, and `del` operations.
+
+<Info>
+Redis caching is ideal for multi-server deployments, serverless functions, and applications that need shared cache across instances.
+</Info>
+
+## Installation
+
+Install `ioredis` alongside the Sniffmail SDK:
+
+```bash
+npm install sniffmail ioredis
+```
+
+## Basic Setup
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+## Redis Client Interface
+
+The `RedisCache` class accepts any client implementing this interface:
+
+```typescript
+type RedisClient = {
+  get(key: string): Promise<string | null>;
+  setex(key: string, seconds: number, value: string): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+};
+```
+
+<Note>
+This minimal interface ensures compatibility with ioredis, node-redis v4+, and other Redis clients.
+</Note>
+
+## Configuration Examples
+
+### With Connection Options
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  host: 'localhost',
+  port: 6379,
+  password: 'your-password',
+  db: 0,
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  },
+});
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+    enabled: true,
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+### With Redis Cluster
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import { Cluster } from 'ioredis';
+
+const cluster = new Cluster([
+  { host: 'redis-1.example.com', port: 6379 },
+  { host: 'redis-2.example.com', port: 6379 },
+  { host: 'redis-3.example.com', port: 6379 },
+]);
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(cluster),
+  },
+});
+```
+
+### With Redis Sentinel
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  sentinels: [
+    { host: 'sentinel-1.example.com', port: 26379 },
+    { host: 'sentinel-2.example.com', port: 26379 },
+  ],
+  name: 'mymaster',
+});
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+## Cache Key Format
+
+Cache keys are automatically prefixed with `sniffmail:` and use the lowercase, trimmed email address:
+
+```
+sniffmail:user@example.com
+sniffmail:admin@company.io
+```
+
+<Note>
+See `src/cache/index.ts:25-27` for the key generation implementation.
+</Note>
+
+## Implementation Details
+
+The `RedisCache` class is a thin wrapper that implements the `CacheStore` interface:
+
+```typescript
+export class RedisCache implements CacheStore {
+  private client: RedisClient;
+
+  constructor(client: RedisClient) {
+    this.client = client;
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.client.get(key);
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+    await this.client.setex(key, ttlSeconds, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.del(key);
+  }
+}
+```
+
+<Info>
+**Source:** `src/cache/redis.ts:9-30`
+</Info>
+
+## TTL Strategy
+
+Different validation results are cached with different TTLs:
+
+| Status | Default TTL | Reason |
+|--------|-------------|--------|
+| `safe` | 7 days (604800s) | Valid emails rarely change |
+| `invalid` | 30 days (2592000s) | Invalid emails almost never become valid |
+| `risky` | 1 day (86400s) | Status may change (catch-all, full inbox) |
+| `unknown` | 0s (no cache) | Should retry on next request |
+
+<Note>
+**Source:** `src/config.ts:5-10`
+</Note>
+
+## Error Handling
+
+```typescript
+import { configure, RedisCache, validateEmail } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+redis.on('error', (err) => {
+  console.error('Redis connection error:', err);
+});
+
+redis.on('connect', () => {
+  console.log('Redis connected');
+});
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+
+// Validation will work even if Redis is unavailable
+// (falls back to no caching)
+const result = await validateEmail('user@example.com', { deep: true });
+```
+
+<Warning>
+If Redis operations fail, the SDK will throw errors. Implement proper error handling in your application or use Redis connection retry strategies.
+</Warning>
+
+## Production Deployment
+
+### Docker Compose Example
+
+```yaml
+version: '3.8'
+services:
+  app:
+    build: .
+    environment:
+      - SNIFFMAIL_API_KEY=sniff_xxxxx
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+```
+
+### Application Code
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+## Monitoring Cache Performance
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+const result = await validateEmail('user@example.com');
+
+if (result.cached) {
+  console.log('Cache hit - no API call made');
+} else {
+  console.log('Cache miss - API called');
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Cache" icon="code" href="/advanced/custom-cache">
+    Implement a custom cache store
+  </Card>
+  <Card title="API Integration" icon="api" href="/advanced/api-integration">
+    Learn about the Sniffmail API
+  </Card>
+</CardGroup>

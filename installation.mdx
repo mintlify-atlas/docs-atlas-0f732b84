@@ -1,0 +1,127 @@
+---
+title: Installation
+description: Install Sniffmail SDK in your Node.js project
+---
+
+# Installation
+
+Install Sniffmail SDK using your preferred package manager.
+
+## Package Managers
+
+<CodeGroup>
+
+```bash npm
+npm install sniffmail
+```
+
+```bash yarn
+yarn add sniffmail
+```
+
+```bash pnpm
+pnpm add sniffmail
+```
+
+</CodeGroup>
+
+## Requirements
+
+<Note>
+  **Node.js 18 or higher** is required to use Sniffmail SDK.
+</Note>
+
+The library is built with ES modules and requires Node.js version 18 or later. Check your Node.js version:
+
+```bash
+node --version
+```
+
+## Optional Dependencies
+
+### Redis Cache (Optional)
+
+If you want to use Redis for caching validation results across multiple instances, install `ioredis`:
+
+<CodeGroup>
+
+```bash npm
+npm install ioredis
+```
+
+```bash yarn
+yarn add ioredis
+```
+
+```bash pnpm
+pnpm add ioredis
+```
+
+</CodeGroup>
+
+<Note>
+  Redis is optional. By default, Sniffmail uses an in-memory cache that works great for single-instance applications.
+</Note>
+
+## TypeScript Support
+
+Sniffmail is written in TypeScript and includes type definitions out of the box. No additional `@types` packages are needed.
+
+```typescript
+import { validateEmail, ValidationResult } from 'sniffmail';
+
+// Full TypeScript support with autocomplete and type checking
+const result: ValidationResult = await validateEmail('user@example.com');
+```
+
+## Module System
+
+Sniffmail supports both ES modules (ESM) and CommonJS:
+
+<CodeGroup>
+
+```typescript ESM
+import { validateEmail } from 'sniffmail';
+
+const result = await validateEmail('user@example.com');
+```
+
+```javascript CommonJS
+const { validateEmail } = require('sniffmail');
+
+const result = await validateEmail('user@example.com');
+```
+
+</CodeGroup>
+
+## Verification
+
+Verify your installation by running a simple validation:
+
+```typescript
+import { validateEmail } from 'sniffmail';
+
+const result = await validateEmail('test@gmail.com');
+console.log(result);
+// {
+//   email: 'test@gmail.com',
+//   valid: true,
+//   reason: null,
+//   disposable: false,
+//   mx: true,
+//   smtp: null,
+//   cached: false
+// }
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Learn how to validate emails and set up deep SMTP verification
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/validate-email">
+    Explore all available methods and configuration options
+  </Card>
+</CardGroup>

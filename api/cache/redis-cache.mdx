@@ -1,0 +1,341 @@
+---
+title: 'RedisCache'
+description: 'Redis-backed cache store for distributed email validation'
+---
+
+## Overview
+
+`RedisCache` is a Redis-backed cache implementation for storing email validation results in a distributed cache. It's ideal for production environments with multiple application instances that need to share cached validation results.
+
+<Note>
+  Redis handles TTL expiration automatically. Expired entries are removed by Redis itself.
+</Note>
+
+## Class Definition
+
+```typescript
+import { RedisCache } from 'sniffmail';
+
+class RedisCache implements CacheStore {
+  constructor(client: RedisClient);
+  async get(key: string): Promise<string | null>;
+  async set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  async delete(key: string): Promise<void>;
+}
+```
+
+## Constructor
+
+```typescript
+import { RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redisClient = new Redis('redis://localhost:6379');
+const cache = new RedisCache(redisClient);
+```
+
+### Parameters
+
+<ParamField path="client" type="RedisClient" required>
+  A Redis client instance that implements the required methods: `get()`, `setex()`, and `del()`.
+  
+  Compatible with popular Redis clients:
+  - [ioredis](https://github.com/redis/ioredis)
+  - [node-redis](https://github.com/redis/node-redis) (v4+)
+  - Any client matching the `RedisClient` interface
+</ParamField>
+
+### RedisClient Interface
+
+```typescript
+type RedisClient = {
+  get(key: string): Promise<string | null>;
+  setex(key: string, seconds: number, value: string): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+};
+```
+
+## Methods
+
+### get()
+
+Retrieves a value from Redis by key.
+
+```typescript
+const value = await cache.get('sniffmail:user@example.com');
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to retrieve
+</ParamField>
+
+**Returns:** `Promise<string | null>` - The cached value, or `null` if not found or expired
+
+### set()
+
+Stores a value in Redis with a TTL.
+
+```typescript
+await cache.set('sniffmail:user@example.com', '{"valid":true}', 604800);
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to store
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The value to cache (typically JSON-stringified validation result)
+</ParamField>
+
+<ParamField path="ttlSeconds" type="number" required>
+  Time-to-live in seconds. If `<= 0`, the value will not be cached.
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+<Info>
+  Uses Redis `SETEX` command which atomically sets both value and expiration.
+</Info>
+
+### delete()
+
+Removes a specific entry from Redis.
+
+```typescript
+await cache.delete('sniffmail:user@example.com');
+```
+
+<ParamField path="key" type="string" required>
+  The cache key to remove
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+## Setup Examples
+
+### Using ioredis
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+// Create Redis client
+const redis = new Redis({
+  host: 'localhost',
+  port: 6379,
+  password: process.env.REDIS_PASSWORD,
+  db: 0,
+});
+
+// Configure Sniffmail with Redis cache
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    enabled: true,
+    store: new RedisCache(redis),
+    ttl: {
+      safe: 604800,     // 7 days
+      invalid: 2592000, // 30 days
+      risky: 86400,     // 1 day
+      unknown: 0,       // Don't cache
+    },
+  },
+});
+```
+
+### Using node-redis (v4+)
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import { createClient } from 'redis';
+
+// Create and connect Redis client
+const redis = createClient({
+  url: 'redis://localhost:6379',
+});
+await redis.connect();
+
+// Configure Sniffmail
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+### Redis Cluster
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis.Cluster([
+  { host: 'redis-node1', port: 6379 },
+  { host: 'redis-node2', port: 6379 },
+  { host: 'redis-node3', port: 6379 },
+]);
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+### Redis with TLS
+
+```typescript
+import { RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  host: 'redis.example.com',
+  port: 6380,
+  tls: {
+    rejectUnauthorized: true,
+  },
+});
+
+const cache = new RedisCache(redis);
+```
+
+### Railway/Render/Heroku Redis
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+// Most platforms provide REDIS_URL
+const redis = new Redis(process.env.REDIS_URL);
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+## When to Use RedisCache
+
+<Check>
+  **Good for:**
+  - Multi-instance deployments (load balanced, containerized)
+  - Production environments
+  - High-traffic applications
+  - Distributed systems
+  - Applications requiring cache persistence
+  - Sharing validation results across services
+</Check>
+
+<Warning>
+  **Requirements:**
+  - Redis server (self-hosted or managed)
+  - Redis client library installed (`ioredis` or `redis`)
+  - Network connectivity to Redis
+</Warning>
+
+## Cache Key Format
+
+Sniffmail automatically prefixes all cache keys with `sniffmail:`:
+
+```
+sniffmail:user@example.com
+sniffmail:test@gmail.com
+sniffmail:admin@company.org
+```
+
+Email addresses are normalized (lowercase, trimmed) before being used as keys.
+
+## Performance
+
+- **Get Operations:** ~1-2ms (local Redis) or ~10-30ms (cloud Redis)
+- **Set Operations:** ~1-2ms (local Redis) or ~10-30ms (cloud Redis)
+- **Network Overhead:** Minimal with connection pooling
+- **TTL Management:** Automatic expiration by Redis
+
+<Tip>
+  For optimal performance, deploy Redis in the same region/datacenter as your application instances.
+</Tip>
+
+## Error Handling
+
+```typescript
+import { configure, RedisCache } from 'sniffmail';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+// Handle connection errors
+redis.on('error', (err) => {
+  console.error('Redis connection error:', err);
+});
+
+redis.on('connect', () => {
+  console.log('Redis connected');
+});
+
+configure({
+  cache: {
+    store: new RedisCache(redis),
+  },
+});
+```
+
+<Note>
+  If Redis is unavailable, validation will continue without caching. The SDK gracefully handles cache failures.
+</Note>
+
+## Best Practices
+
+1. **Connection Pooling** - Reuse Redis client instances across your application
+2. **Graceful Shutdown** - Close Redis connections on app shutdown:
+   ```typescript
+   process.on('SIGTERM', async () => {
+     await redis.quit();
+   });
+   ```
+3. **Monitor Memory** - Set Redis `maxmemory` and eviction policy:
+   ```redis
+   maxmemory 256mb
+   maxmemory-policy allkeys-lru
+   ```
+4. **Use Connection Timeout** - Prevent hanging on Redis failures:
+   ```typescript
+   const redis = new Redis({
+     host: 'localhost',
+     connectTimeout: 10000, // 10 seconds
+   });
+   ```
+
+## Redis Providers
+
+Popular managed Redis services compatible with `RedisCache`:
+
+- **[Upstash](https://upstash.com/)** - Serverless Redis with per-request pricing
+- **[Redis Cloud](https://redis.com/cloud/)** - Fully managed Redis by Redis Labs
+- **[AWS ElastiCache](https://aws.amazon.com/elasticache/)** - Redis on AWS
+- **[Azure Cache for Redis](https://azure.microsoft.com/services/cache/)** - Redis on Azure
+- **[Railway](https://railway.app/)** - Easy Redis deployment
+
+## CacheStore Interface
+
+`RedisCache` implements the `CacheStore` interface:
+
+```typescript
+interface CacheStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  delete?(key: string): Promise<void>;
+}
+```
+
+You can create custom cache implementations (Memcached, DynamoDB, etc.) by implementing this interface.
+
+## Related
+
+- [MemoryCache](/api/cache/memory-cache) - In-memory cache for single-instance apps
+- [configure()](/api/configuration) - Global SDK configuration
+- [validateEmail()](/api/validation/validate-email) - Email validation with caching

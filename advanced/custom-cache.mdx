@@ -1,0 +1,456 @@
+---
+title: 'Custom Cache Implementation'
+description: 'Build custom cache stores for specialized caching strategies'
+---
+
+## Overview
+
+You can implement custom cache stores by implementing the `CacheStore` interface. This allows you to integrate with any caching solution like DynamoDB, MongoDB, file systems, or custom in-memory stores.
+
+## CacheStore Interface
+
+The `CacheStore` interface requires three methods:
+
+```typescript
+export interface CacheStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  delete?(key: string): Promise<void>;
+}
+```
+
+<Info>
+**Source:** `src/types.ts:65-69`
+</Info>
+
+### Method Specifications
+
+#### `get(key: string)`
+
+- **Returns:** The cached value as a string, or `null` if not found or expired
+- **Should handle:** Expiration checking, serialization
+
+#### `set(key: string, value: string, ttlSeconds: number)`
+
+- **Parameters:**
+  - `key` - The cache key (already prefixed with `sniffmail:`)
+  - `value` - JSON-serialized validation result
+  - `ttlSeconds` - Time-to-live in seconds (0 means don't cache)
+- **Should handle:** Expiration timestamps, storage limits
+
+#### `delete(key: string)` (optional)
+
+- **Parameters:** `key` - The cache key to remove
+- **Optional:** If not implemented, cache invalidation won't be available
+
+<Note>
+If `ttlSeconds` is 0 or negative, your implementation should skip caching. The SDK uses `ttlSeconds: 0` for `unknown` validation results.
+</Note>
+
+## Example: Memory Cache
+
+Here's the built-in `MemoryCache` implementation as a reference:
+
+```typescript
+import type { CacheStore } from 'sniffmail';
+
+interface CacheEntry {
+  value: string;
+  expires: number;
+}
+
+export class MemoryCache implements CacheStore {
+  private store = new Map<string, CacheEntry>();
+
+  async get(key: string): Promise<string | null> {
+    const entry = this.store.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    if (Date.now() > entry.expires) {
+      this.store.delete(key);
+      return null;
+    }
+
+    return entry.value;
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    this.store.set(key, {
+      value,
+      expires: Date.now() + ttlSeconds * 1000,
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+
+  size(): number {
+    return this.store.size;
+  }
+}
+```
+
+<Info>
+**Source:** `src/cache/memory.ts:8-47`
+</Info>
+
+## Example: File System Cache
+
+```typescript
+import { CacheStore } from 'sniffmail';
+import fs from 'fs/promises';
+import path from 'path';
+
+interface FileCacheEntry {
+  value: string;
+  expires: number;
+}
+
+export class FileSystemCache implements CacheStore {
+  private cacheDir: string;
+
+  constructor(cacheDir: string = './.cache/sniffmail') {
+    this.cacheDir = cacheDir;
+    this.ensureDir();
+  }
+
+  private async ensureDir(): Promise<void> {
+    await fs.mkdir(this.cacheDir, { recursive: true });
+  }
+
+  private getFilePath(key: string): string {
+    // Hash the key to create a valid filename
+    const hash = Buffer.from(key).toString('base64url');
+    return path.join(this.cacheDir, `${hash}.json`);
+  }
+
+  async get(key: string): Promise<string | null> {
+    try {
+      const filePath = this.getFilePath(key);
+      const content = await fs.readFile(filePath, 'utf-8');
+      const entry: FileCacheEntry = JSON.parse(content);
+
+      if (Date.now() > entry.expires) {
+        await this.delete(key);
+        return null;
+      }
+
+      return entry.value;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    const filePath = this.getFilePath(key);
+    const entry: FileCacheEntry = {
+      value,
+      expires: Date.now() + ttlSeconds * 1000,
+    };
+
+    await fs.writeFile(filePath, JSON.stringify(entry), 'utf-8');
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      const filePath = this.getFilePath(key);
+      await fs.unlink(filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
+}
+```
+
+### Usage
+
+```typescript
+import { configure } from 'sniffmail';
+import { FileSystemCache } from './file-system-cache';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new FileSystemCache('./.cache/emails'),
+  },
+});
+```
+
+## Example: DynamoDB Cache
+
+```typescript
+import { CacheStore } from 'sniffmail';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+
+export class DynamoDBCache implements CacheStore {
+  private client: DynamoDBDocumentClient;
+  private tableName: string;
+
+  constructor(tableName: string = 'sniffmail-cache') {
+    const dynamoClient = new DynamoDBClient({});
+    this.client = DynamoDBDocumentClient.from(dynamoClient);
+    this.tableName = tableName;
+  }
+
+  async get(key: string): Promise<string | null> {
+    const result = await this.client.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { cacheKey: key },
+      })
+    );
+
+    if (!result.Item) {
+      return null;
+    }
+
+    const ttl = result.Item.ttl as number;
+    if (Date.now() / 1000 > ttl) {
+      await this.delete(key);
+      return null;
+    }
+
+    return result.Item.value as string;
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
+
+    await this.client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          cacheKey: key,
+          value,
+          ttl,
+        },
+      })
+    );
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(
+      new DeleteCommand({
+        TableName: this.tableName,
+        Key: { cacheKey: key },
+      })
+    );
+  }
+}
+```
+
+<Note>
+DynamoDB table should have:
+- Partition key: `cacheKey` (String)
+- TTL attribute: `ttl` (Number)
+</Note>
+
+### Usage
+
+```typescript
+import { configure } from 'sniffmail';
+import { DynamoDBCache } from './dynamodb-cache';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new DynamoDBCache('my-email-cache-table'),
+  },
+});
+```
+
+## Example: LRU Cache with Size Limit
+
+```typescript
+import { CacheStore } from 'sniffmail';
+import { LRUCache } from 'lru-cache';
+
+interface CacheEntry {
+  value: string;
+  expires: number;
+}
+
+export class LRUCacheStore implements CacheStore {
+  private cache: LRUCache<string, CacheEntry>;
+
+  constructor(maxSize: number = 10000) {
+    this.cache = new LRUCache<string, CacheEntry>({
+      max: maxSize,
+      ttl: 0, // We handle TTL manually
+    });
+  }
+
+  async get(key: string): Promise<string | null> {
+    const entry = this.cache.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    if (Date.now() > entry.expires) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return entry.value;
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    this.cache.set(key, {
+      value,
+      expires: Date.now() + ttlSeconds * 1000,
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    this.cache.delete(key);
+  }
+
+  size(): number {
+    return this.cache.size;
+  }
+}
+```
+
+### Usage
+
+```typescript
+import { configure } from 'sniffmail';
+import { LRUCacheStore } from './lru-cache';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new LRUCacheStore(50000), // Max 50k cached emails
+  },
+});
+```
+
+## Cache Key Format
+
+The SDK automatically generates cache keys using this format:
+
+```typescript
+function getCacheKey(email: string): string {
+  return `sniffmail:${email.toLowerCase().trim()}`;
+}
+```
+
+<Info>
+**Source:** `src/cache/index.ts:25-27`
+</Info>
+
+Examples:
+- `User@Example.COM` → `sniffmail:user@example.com`
+- ` admin@site.io ` → `sniffmail:admin@site.io`
+
+## Cached Value Format
+
+The cached value is a JSON-serialized `ValidationResult`:
+
+```typescript
+{
+  "email": "user@example.com",
+  "valid": true,
+  "reason": null,
+  "disposable": false,
+  "mx": true,
+  "smtp": {
+    "is_reachable": "safe",
+    "can_connect": true,
+    "is_deliverable": true,
+    "is_catch_all": false
+  },
+  "cached": false
+}
+```
+
+## TTL Configuration
+
+You can customize TTL values when configuring the SDK:
+
+```typescript
+import { configure } from 'sniffmail';
+import { MyCustomCache } from './my-cache';
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: {
+    store: new MyCustomCache(),
+    ttl: {
+      safe: 604800,     // 7 days - valid emails
+      invalid: 2592000, // 30 days - invalid emails
+      risky: 86400,     // 1 day - catch-all, full inbox
+      unknown: 0,       // Don't cache - unknown status
+    },
+  },
+});
+```
+
+<Warning>
+Your `set()` implementation receives the final computed TTL value in seconds. You don't need to look up TTL configuration - it's already applied by the SDK.
+</Warning>
+
+## Testing Your Implementation
+
+```typescript
+import { configure, validateEmail } from 'sniffmail';
+import { MyCustomCache } from './my-cache';
+
+const cache = new MyCustomCache();
+
+configure({
+  apiKey: process.env.SNIFFMAIL_API_KEY,
+  cache: { store: cache },
+});
+
+// First call - should miss cache
+const result1 = await validateEmail('user@example.com');
+console.log('Cached:', result1.cached); // false
+
+// Second call - should hit cache
+const result2 = await validateEmail('user@example.com');
+console.log('Cached:', result2.cached); // true
+
+// Results should be identical
+console.log('Match:', JSON.stringify(result1) === JSON.stringify(result2));
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Redis Cache" icon="database" href="/advanced/redis-cache">
+    Use the built-in Redis cache
+  </Card>
+  <Card title="API Integration" icon="api" href="/advanced/api-integration">
+    Deep dive into the Sniffmail API
+  </Card>
+</CardGroup>
