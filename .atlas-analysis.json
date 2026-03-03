@@ -1,0 +1,111 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Sniffmail",
+  "projectDescription": "Email validation library that detects disposable addresses and verifies mailbox existence via SMTP",
+  "theme": "palm",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#2563EB",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/validation-modes",
+              "concepts/caching"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/basic-validation",
+              "guides/deep-verification",
+              "guides/batch-processing",
+              "guides/error-handling"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/redis-cache",
+              "advanced/custom-cache",
+              "advanced/api-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Functions",
+            "pages": [
+              "api/validate-email",
+              "api/validate-emails",
+              "api/configure",
+              "api/is-disposable-domain"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api/types/validation-result",
+              "api/types/validation-options",
+              "api/types/smtp-result",
+              "api/types/config"
+            ]
+          },
+          {
+            "group": "Cache",
+            "pages": [
+              "api/cache/memory-cache",
+              "api/cache/redis-cache"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utilities/stats",
+              "api/utilities/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Syntax validation with RFC-compliant regex",
+    "Disposable email detection using multiple sources",
+    "MX record lookup and DNS validation",
+    "Deep SMTP mailbox verification",
+    "Batch processing with concurrency control",
+    "In-memory and Redis caching support",
+    "Real-time DeBounce API integration",
+    "Comprehensive error handling"
+  ],
+  "publicApiSurface": [
+    "validateEmail(email, options?)",
+    "validateEmails(emails, options?)",
+    "configure(config)",
+    "isDisposableDomain(domain)",
+    "getValidatorStats()",
+    "addDiscoveredDomain(domain)",
+    "reloadDiscoveredDomains()",
+    "MemoryCache",
+    "RedisCache",
+    "ApiKeyNotConfiguredError",
+    "SniffmailError"
+  ]
+}
